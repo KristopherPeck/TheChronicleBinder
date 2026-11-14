@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import mimetypes
@@ -19,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
 
-USER_AGENT = "TheLibrarianAssistant/0.1 (+personal EPUB converter)"
+USER_AGENT = "TheHaruspisAssistant/0.1 (+personal EPUB converter)"
 ALLOWED_HOSTS = {"halowaypoint.com", "www.halowaypoint.com"}
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
@@ -112,6 +113,7 @@ class Article:
     hero_url: str | None
     hero_alt: str
     content: Node
+    plot: str = ""
 
 
 @dataclass(frozen=True)
@@ -142,6 +144,46 @@ def _find_meta(root: Node, key: str, value: str) -> str:
     for node in root.descendants("meta"):
         if node.attrs.get(key) == value:
             return node.attrs.get("content", "").strip()
+    return ""
+
+
+def _image_source(node: Node | None) -> tuple[str, str]:
+    """Return the best URL and alt text from an image or image wrapper."""
+
+    if node is None:
+        return "", ""
+    image = node if node.tag == "img" else next(node.descendants("img"), None)
+    if image is None:
+        return "", ""
+    source = image.attrs.get("src") or image.attrs.get("data-src", "")
+    if not source:
+        srcset = image.attrs.get("srcset") or image.attrs.get("data-srcset", "")
+        if srcset:
+            source = srcset.split(",", 1)[0].strip().split(" ", 1)[0]
+    return source, image.attrs.get("alt", "")
+
+
+def _historian_note(content: Node) -> str:
+    """Extract the opening Historian's Note for ebook description metadata."""
+
+    children = [child for child in content.children if isinstance(child, Node)]
+    for index, node in enumerate(children):
+        heading = node.text().upper().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'").rstrip(":")
+        if heading not in {"HISTORIAN'S NOTE", "HISTORIANS NOTE"}:
+            continue
+        paragraphs: list[str] = []
+        for candidate in children[index + 1:]:
+            text = candidate.text().strip()
+            if not text:
+                if paragraphs:
+                    break
+                continue
+            if candidate.tag in {"h1", "h2", "h3", "h4", "hr"}:
+                break
+            if text in {"*", "* * *", "\N{FOUR TEARDROP-SPOKED ASTERISK}"}:
+                break
+            paragraphs.append(text)
+        return "\n\n".join(paragraphs)
     return ""
 
 
@@ -211,9 +253,11 @@ def parse_article(page: bytes, source_url: str) -> Article:
     subtitle = subtitle_node.text() if subtitle_node else ""
     author = re.sub(r"^\s*By\s+", "", subtitle, flags=re.IGNORECASE).strip() or _find_meta(root, "name", "author") or "Halo Studios"
     category = category_node.text() if category_node else "Waypoint Chronicle"
-    hero_url = urljoin(source_url, hero_node.attrs.get("src", "")) if hero_node and hero_node.attrs.get("src") else None
-    hero_alt = hero_node.attrs.get("alt", "Cover artwork") if hero_node else "Cover artwork"
-    return Article(title, author, category, source_url, hero_url, hero_alt, content)
+    hero_source, hero_alt = _image_source(hero_node)
+    hero_source = hero_source or _find_meta(root, "property", "og:image")
+    hero_alt = hero_alt or _find_meta(root, "property", "og:image:alt") or "Cover artwork"
+    hero_url = urljoin(source_url, hero_source) if hero_source else None
+    return Article(title, author, category, source_url, hero_url, hero_alt, content, _historian_note(content))
 
 
 def _safe_filename(title: str) -> str:
@@ -334,7 +378,7 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
     normalized_plain = plain.upper().replace("’", "'").rstrip(":")
     if tag == "p" and normalized_plain in {"HISTORIAN'S NOTE", "HISTORIANS NOTE"}:
         css_class = ' class="note-heading"'
-    elif tag == "p" and plain in {"*", "✦", "•"}:
+    elif tag == "p" and plain in {"*", "* * *", "✦", "•"}:
         return '<div class="scene-break" aria-label="Scene break">&#10022;</div>'
     elif tag in {"h2", "h3", "h4"}:
         css_class = ' class="section-heading"'
@@ -349,7 +393,7 @@ def _render_story(article: Article, image_paths: dict[str, str]) -> str:
     return rendered.strip()
 
 
-CSS = """@charset "utf-8";
+WAYPOINT_CSS = """@charset "utf-8";
 @page { margin: 5%; }
 html { color: #202a2f; background: #f4f0e7; }
 body { margin: 0 auto; padding: 0 5%; max-width: 38em; font-family: Georgia, "Times New Roman", serif; font-size: 1em; line-height: 1.58; }
@@ -382,14 +426,34 @@ nav ol { padding-left: 1.4em; }
 nav li { margin: 0.6em 0; }
 """
 
+CLASSIC_CSS = WAYPOINT_CSS + """
+html, .cover-body { color: #000000; background: #ffffff; }
+body { color: #000000; background: #ffffff; }
+a { color: inherit; text-decoration: underline; }
+.kicker, h1, .imprint, .story-header .book-title,
+.note-heading, .section-heading, .epigraph, .scene-break,
+figcaption, .credits dt { color: inherit; }
+.rule, .story-header, .note-heading { border-color: currentColor; }
+"""
 
-def _xhtml(title: str, body: str, body_class: str = "") -> str:
+READING_STYLES = {"waypoint": WAYPOINT_CSS, "classic": CLASSIC_CSS}
+
+
+def _stylesheet(reading_style: str) -> str:
+    try:
+        return READING_STYLES[reading_style]
+    except KeyError as exc:
+        raise ConversionError(f"Unknown reading style: {reading_style}") from exc
+
+
+def _xhtml(title: str, body: str, body_class: str = "", body_style: str = "") -> str:
     class_attr = f' class="{body_class}"' if body_class else ""
+    style_attr = f' style="{_xml(body_style)}"' if body_style else ""
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
 <html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en">
 <head><meta charset="utf-8"/><title>{_xml(title)}</title><link rel="stylesheet" type="text/css" href="../Styles/book.css"/></head>
-<body{class_attr}>{body}</body>
+<body{class_attr}{style_attr}>{body}</body>
 </html>'''
 
 
@@ -419,34 +483,43 @@ def _cover_title_lines(title: str, target_length: int = 18) -> list[str]:
 
 
 def _cover_svg(article: Article, hero_asset: ImageAsset | None) -> str:
+    cover_width = 1700
+    cover_height = 2400
+    title_x = cover_width // 2
+    title_letter_spacing = 14
+    rule_y = cover_height - 420
+    subtitle_y = cover_height - 315
     lines = _cover_title_lines(article.title)
     longest_line = max(len(line) for line in lines)
-    available_width = 1280 - (max(longest_line - 1, 0) * 4)
+    available_width = (cover_width - 320) - (max(longest_line - 1, 0) * title_letter_spacing)
     width_limited_size = int(available_width / max(longest_line * 0.62, 1))
-    height_limited_size = int(760 / max(len(lines) * 1.18, 1))
+    height_limited_size = int(560 / max(len(lines) * 1.18, 1))
     font_size = max(28, min(132, width_limited_size, height_limited_size))
     line_height = int(font_size * 1.18)
-    title_start = 2160 - (len(lines) - 1) * line_height
+    title_start = (rule_y - 115) - ((len(lines) - 1) * line_height)
     title_spans = "".join(
-        f'<tspan x="120" y="{title_start + index * line_height}">{_xml(line)}</tspan>'
+        f'<tspan x="{title_x}" y="{title_start + index * line_height}">{_xml(line)}</tspan>'
         for index, line in enumerate(lines)
     )
-    artwork = (
-        f'''<rect width="1600" height="2560" fill="#10191d"/>
-<image href="{_xml(hero_asset.filename)}" xlink:href="{_xml(hero_asset.filename)}" x="0" y="0" width="1600" height="2560" preserveAspectRatio="xMidYMid slice" opacity="0.38"/>
-<rect width="1600" height="2560" fill="#071014" opacity="0.28"/>
-<image href="{_xml(hero_asset.filename)}" xlink:href="{_xml(hero_asset.filename)}" x="60" y="80" width="1480" height="2180" preserveAspectRatio="xMidYMid meet"/>'''
-        if hero_asset
-        else '<rect width="1600" height="2560" fill="#17262d"/><path d="M0 340 L1600 0 M0 760 L1600 420 M0 1180 L1600 840" stroke="#285865" stroke-width="3" opacity="0.55"/>'
-    )
+    if hero_asset:
+        encoded_artwork = base64.b64encode(hero_asset.data).decode("ascii")
+        artwork = (
+            f'<rect width="{cover_width}" height="{cover_height}" fill="#10191d"/>'
+            f'<image href="data:{_xml(hero_asset.media_type)};base64,{encoded_artwork}" '
+            f'xlink:href="data:{_xml(hero_asset.media_type)};base64,{encoded_artwork}" '
+            f'x="0" y="0" width="{cover_width}" height="{cover_height}" preserveAspectRatio="xMidYMid slice"/>'
+        )
+    else:
+        artwork = f'<rect width="{cover_width}" height="{cover_height}" fill="#17262d"/><path d="M0 340 L{cover_width} 0 M0 760 L{cover_width} 420 M0 1180 L{cover_width} 840" stroke="#285865" stroke-width="3" opacity="0.55"/>'
     return f'''<?xml version="1.0" encoding="utf-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" viewBox="0 0 1600 2560" role="img" aria-labelledby="cover-title cover-description">
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{cover_width}" height="{cover_height}" viewBox="0 0 {cover_width} {cover_height}" style="background:#10191d" role="img" aria-labelledby="cover-title cover-description">
 <title id="cover-title">{_xml(article.title)}</title><desc id="cover-description">{_xml(article.hero_alt or "Halo Waypoint Chronicle cover")}</desc>
-<defs><linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#071014" stop-opacity="0"/><stop offset="0.48" stop-color="#071014" stop-opacity="0.2"/><stop offset="1" stop-color="#071014" stop-opacity="0.96"/></linearGradient></defs>
-{artwork}<rect x="0" y="0" width="1600" height="2560" fill="url(#shade)"/>
-<g fill="#ffffff" font-family="Arial, Helvetica, sans-serif"><text font-size="{font_size}" font-weight="700" letter-spacing="4">{title_spans}</text>
-<rect x="120" y="2325" width="1360" height="3" fill="#73c8d7"/>
-<text x="120" y="2415" font-size="43" font-weight="600" letter-spacing="12">A HALO WAYPOINT CHRONICLE</text></g>
+<defs><linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000000" stop-opacity="0"/><stop offset="0.58" stop-color="#000000" stop-opacity="0"/><stop offset="0.72" stop-color="#000000" stop-opacity="0.42"/><stop offset="0.84" stop-color="#000000" stop-opacity="0.96"/><stop offset="1" stop-color="#000000" stop-opacity="1"/></linearGradient></defs>
+{artwork}<rect x="0" y="0" width="{cover_width}" height="{cover_height}" fill="url(#shade)"/>
+<g fill="#ffffff" font-family="Arial Black, Arial, Helvetica, sans-serif" text-anchor="middle"><text font-size="{font_size}" font-weight="800" letter-spacing="{title_letter_spacing}">{title_spans}</text>
+<g fill="none" stroke="#73c8d7" stroke-width="3"><path d="M220 {rule_y} H{title_x - 70}"/><path d="M{title_x + 70} {rule_y} H{cover_width - 220}"/></g>
+<g fill="none" stroke="#73c8d7" stroke-linecap="square"><path d="M{title_x - 38} {rule_y - 9} L{title_x} {rule_y + 25} L{title_x + 38} {rule_y - 9}" stroke-width="8"/><path d="M{title_x - 20} {rule_y - 9} L{title_x} {rule_y + 8} L{title_x + 20} {rule_y - 9}" stroke-width="4"/></g>
+<text x="{title_x}" y="{subtitle_y}" font-family="Arial, Helvetica, sans-serif" font-size="43" font-weight="600" letter-spacing="16">A HALO WAYPOINT CHRONICLE</text></g>
 </svg>'''
 
 
@@ -457,12 +530,14 @@ def _build_epub(
     output: Path,
     *,
     overwrite: bool = False,
+    reading_style: str = "waypoint",
 ) -> None:
     identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, article.source_url)}"
     modified = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     hero_asset = next((asset for asset in assets if asset.source_url == article.hero_url), None)
     cover_svg = _cover_svg(article, hero_asset)
-    cover_body = f'<section class="cover"><img src="../Images/cover.svg" alt="Cover of {_xml(article.title)}"/></section>'
+    cover_body = f'<section class="cover" style="margin:0;padding:0"><img src="../Images/cover.svg" alt="Cover of {_xml(article.title)}" style="display:block;width:100%;height:auto;margin:0;padding:0;border:0"/></section>'
+    cover_page_style = "margin:0;padding:0;max-width:none;background:#10191d;text-align:center;overflow:hidden"
     title_body = f'''<section class="title-page" epub:type="titlepage">
 <div class="kicker">{_xml(article.category)}</div><h1>{_xml(article.title)}</h1><div class="rule"></div>
 <div class="byline">by {_xml(article.author)}</div>
@@ -478,19 +553,18 @@ def _build_epub(
 <li><a href="title.xhtml">{_xml(article.title)}</a></li><li><a href="story.xhtml">Story</a></li><li><a href="credits.xhtml">Edition information</a></li>
 </ol></nav>'''
 
+    stylesheet = _stylesheet(reading_style)
     image_manifest = []
-    legacy_cover_id = "cover-image"
     for index, asset in enumerate(assets, start=1):
         image_manifest.append(f'<item id="image{index}" href="Images/{_xml(asset.filename)}" media-type="{_xml(asset.media_type)}"/>' )
-        if asset is hero_asset:
-            legacy_cover_id = f"image{index}"
     opf = f'''<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
 <dc:identifier id="book-id">{identifier}</dc:identifier><dc:title>{_xml(article.title)}</dc:title><dc:creator>{_xml(article.author)}</dc:creator>
-<dc:language>en</dc:language><dc:publisher>Personal edition from Halo Waypoint</dc:publisher><dc:source>{_xml(article.source_url)}</dc:source>
+<dc:language>en</dc:language><dc:publisher>Halo Studios</dc:publisher><dc:source>{_xml(article.source_url)}</dc:source>
+<dc:description>{_xml(article.plot)}</dc:description>
 <meta property="dcterms:modified">{modified}</meta>
-<meta name="cover" content="{legacy_cover_id}"/>
+<meta name="cover" content="cover-image"/>
 </metadata><manifest>
 <item id="css" href="Styles/book.css" media-type="text/css"/>
 <item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>
@@ -533,9 +607,9 @@ def _build_epub(
             book.writestr("META-INF/container.xml", container, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
-            book.writestr("OEBPS/Styles/book.css", CSS, compress_type=zipfile.ZIP_DEFLATED)
+            book.writestr("OEBPS/Styles/book.css", stylesheet, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Images/cover.svg", cover_svg, compress_type=zipfile.ZIP_DEFLATED)
-            book.writestr("OEBPS/Text/cover.xhtml", _xhtml(article.title, cover_body, "cover-body"), compress_type=zipfile.ZIP_DEFLATED)
+            book.writestr("OEBPS/Text/cover.xhtml", _xhtml(article.title, cover_body, "cover-body", cover_page_style), compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/title.xhtml", _xhtml(article.title, title_body), compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/story.xhtml", _xhtml(article.title, story_body), compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/credits.xhtml", _xhtml("Edition information", credits_body), compress_type=zipfile.ZIP_DEFLATED)
@@ -564,6 +638,7 @@ def convert_url(
     *,
     title: str | None = None,
     author: str | None = None,
+    reading_style: str = "waypoint",
     overwrite: bool = False,
     progress: Callable[[str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -593,7 +668,7 @@ def convert_url(
     if cancelled and cancelled():
         raise ConversionCancelled("Conversion cancelled.")
     notify("Packaging EPUB...")
-    _build_epub(article, assets, image_paths, destination, overwrite=overwrite)
+    _build_epub(article, assets, image_paths, destination, overwrite=overwrite, reading_style=reading_style)
     notify("Done")
     return ConversionResult(destination.resolve(), article.title, article.author, len(assets), tuple(warnings))
 

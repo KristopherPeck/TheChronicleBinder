@@ -15,6 +15,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("-o", "--output", type=Path, help="Destination .epub path")
     parser.add_argument("--title", help="Override the detected book title")
     parser.add_argument("--author", help="Override the detected author")
+    parser.add_argument(
+        "--style",
+        choices=("waypoint", "classic"),
+        default="waypoint",
+        help="Reading style: official-inspired color or classic black and white",
+    )
     parser.add_argument("--force", action="store_true", help="Replace the destination if it already exists")
     parser.add_argument("--gui", action="store_true", help="Open the desktop interface")
     return parser
@@ -33,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
             args.output,
             title=args.title,
             author=args.author,
+            reading_style=args.style,
             overwrite=args.force,
             progress=lambda message: print(message, file=sys.stderr),
         )

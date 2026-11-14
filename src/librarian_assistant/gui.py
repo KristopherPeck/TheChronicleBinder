@@ -14,13 +14,14 @@ from .converter import ConversionCancelled, ConversionError, ConversionResult, c
 class ConverterWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("The Librarian Assistant")
+        self.root.title("The Haruspis Assistant")
         self.root.minsize(640, 420)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.url = tk.StringVar()
         self.output = tk.StringVar()
         self.title = tk.StringVar()
         self.author = tk.StringVar()
+        self.reading_style = tk.StringVar(value="Official-inspired color")
         self.status = tk.StringVar(value="Ready")
         self.cancel_event = threading.Event()
         self._build()
@@ -32,7 +33,7 @@ class ConverterWindow:
         style.configure("Hint.TLabel", foreground="#53666d")
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="The Librarian Assistant", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(outer, text="The Haruspis Assistant", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(outer, text="Turn a Halo Waypoint Chronicle into a polished, offline EPUB.", style="Hint.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 22))
 
         ttk.Label(outer, text="Article URL").grid(row=2, column=0, sticky="w", pady=5)
@@ -45,19 +46,27 @@ class ConverterWindow:
         ttk.Entry(outer, textvariable=self.title).grid(row=4, column=1, columnspan=2, sticky="ew", pady=5)
         ttk.Label(outer, text="Author override").grid(row=5, column=0, sticky="w", pady=5)
         ttk.Entry(outer, textvariable=self.author).grid(row=5, column=1, columnspan=2, sticky="ew", pady=5)
-        ttk.Label(outer, text="Title and author are detected automatically; overrides are optional.", style="Hint.TLabel").grid(row=6, column=1, columnspan=2, sticky="w", pady=(0, 18))
+        ttk.Label(outer, text="Reading style").grid(row=6, column=0, sticky="w", pady=5)
+        style_picker = ttk.Combobox(
+            outer,
+            textvariable=self.reading_style,
+            values=("Official-inspired color", "Classic black and white"),
+            state="readonly",
+        )
+        style_picker.grid(row=6, column=1, columnspan=2, sticky="ew", pady=5)
+        ttk.Label(outer, text="Title and author are detected automatically; overrides are optional.", style="Hint.TLabel").grid(row=7, column=1, columnspan=2, sticky="w", pady=(0, 18))
 
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
-        self.progress.grid(row=7, column=0, columnspan=3, sticky="ew", pady=(5, 7))
-        ttk.Label(outer, textvariable=self.status, style="Hint.TLabel").grid(row=8, column=0, columnspan=2, sticky="w")
+        self.progress.grid(row=8, column=0, columnspan=3, sticky="ew", pady=(5, 7))
+        ttk.Label(outer, textvariable=self.status, style="Hint.TLabel").grid(row=9, column=0, columnspan=2, sticky="w")
         actions = ttk.Frame(outer)
-        actions.grid(row=8, column=2, sticky="e")
+        actions.grid(row=9, column=2, sticky="e")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_button.pack(side="left", padx=(0, 8))
         self.convert_button = ttk.Button(actions, text="Create EPUB", command=self._start)
         self.convert_button.pack(side="left")
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(9, weight=1)
+        outer.rowconfigure(10, weight=1)
         self.url_entry.focus_set()
 
     def _browse(self) -> bool:
@@ -94,16 +103,18 @@ class ConverterWindow:
         self.status.set("Starting...")
         title = self.title.get()
         author = self.author.get()
-        worker = threading.Thread(target=self._worker, args=(url, destination, title, author, overwrite), daemon=True)
+        reading_style = "classic" if self.reading_style.get() == "Classic black and white" else "waypoint"
+        worker = threading.Thread(target=self._worker, args=(url, destination, title, author, reading_style, overwrite), daemon=True)
         worker.start()
 
-    def _worker(self, url: str, destination: str, title: str, author: str, overwrite: bool) -> None:
+    def _worker(self, url: str, destination: str, title: str, author: str, reading_style: str, overwrite: bool) -> None:
         try:
             result = convert_url(
                 url,
                 destination,
                 title=title,
                 author=author,
+                reading_style=reading_style,
                 overwrite=overwrite,
                 progress=lambda message: self.events.put(("status", message)),
                 cancelled=self.cancel_event.is_set,
