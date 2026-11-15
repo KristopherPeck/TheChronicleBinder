@@ -210,10 +210,14 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertTrue(lines)
         self.assertTrue(all(len(line) <= 18 for line in lines))
 
-    def test_cover_title_omits_spaced_separator_dashes_but_keeps_compound_hyphens(self):
+    def test_cover_title_keeps_separator_dashes_and_compound_hyphens(self):
         self.assertEqual(
             _cover_title_lines("Halo: Battle for the Academy - Part 2"),
-            ["BATTLE FOR THE", "ACADEMY PART 2"],
+            ["BATTLE FOR THE", "ACADEMY - PART 2"],
+        )
+        self.assertEqual(
+            _cover_title_lines("Halo: Battle for the Academy – Part 2"),
+            ["BATTLE FOR THE", "ACADEMY – PART 2"],
         )
         self.assertIn("BLOOD-MOON", _cover_title_lines("Halo: Battle for the Blood-Moon"))
 

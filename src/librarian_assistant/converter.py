@@ -567,9 +567,6 @@ def _cover_title_lines(title: str, target_length: int = 18) -> list[str]:
     """Split a title into a few balanced lines for the fixed-layout cover."""
 
     display_title = re.sub(r"^Halo:\s*", "", title, flags=re.IGNORECASE).strip().upper()
-    # A spaced dash separates title parts on Waypoint, but looks unbalanced once
-    # letterspaced on a cover. Preserve compound hyphens such as BLOOD-MOON.
-    display_title = re.sub(r"\s+[-\N{EN DASH}\N{EM DASH}]\s+", " ", display_title)
     words: list[str] = []
     for word in display_title.split():
         if len(word) <= target_length:
@@ -642,7 +639,7 @@ def _letterspaced_extents(
     left: float | None = None
     right: float | None = None
     for character in text:
-        bounds = draw.textbbox((cursor, 0), character, font=font, anchor="lt")
+        bounds = draw.textbbox((cursor, 0), character, font=font, anchor="la")
         if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
             left = float(bounds[0]) if left is None else min(left, float(bounds[0]))
             right = float(bounds[2]) if right is None else max(right, float(bounds[2]))
@@ -670,7 +667,10 @@ def _draw_centered_letterspaced(
     left, right = _letterspaced_extents(draw, text, font, spacing)
     x = (canvas_width - (right - left)) / 2 - left
     for character in text:
-        draw.text((x, y), character, font=font, fill=fill, anchor="lt")
+        # Align every glyph to the font's ascender line. Aligning each character
+        # by its visible top makes short punctuation such as hyphens and dashes
+        # jump above the shared baseline.
+        draw.text((x, y), character, font=font, fill=fill, anchor="la")
         x += draw.textlength(character, font=font) + spacing
 
 
