@@ -33,6 +33,10 @@ PRECOMPOSED_COVER_SLUGS = {"halo-winter-contention"}
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 CONTENT_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "li", "figure", "figcaption", "img", "hr", "br", "strong", "b", "em", "i", "a", "span", "sup", "sub"}
 DISCARDED_TAGS = {"script", "style", "noscript", "template", "iframe", "object"}
+SCENE_BREAK_XHTML = (
+    '<div class="scene-break" role="separator" aria-label="Scene break">'
+    '<span aria-hidden="true">&#10022;</span></div>'
+)
 
 
 class ConversionError(RuntimeError):
@@ -444,6 +448,27 @@ def _normalized_text(value: str) -> str:
     return re.sub(r"\s+", " ", value)
 
 
+def _cover_alt_text(article: Article) -> str:
+    """Describe the generated cover without repeating generic source text."""
+
+    base = f"Cover of {article.title} by {article.author_line}"
+    source_alt = _normalized_text(article.hero_alt).strip()
+    if not source_alt or source_alt.casefold() in {"article artwork", "cover artwork"}:
+        return base
+    if article.title.casefold() in source_alt.casefold():
+        return source_alt
+    return f"{base}. {source_alt}"
+
+
+def _image_accessibility_attributes(node: Node) -> str:
+    """Preserve useful source alt text and mark undescribed artwork decorative."""
+
+    source_alt = _normalized_text(node.attrs.get("alt", "")).strip()
+    if source_alt:
+        return f'alt="{_xml(source_alt)}"'
+    return 'alt="" role="presentation"'
+
+
 def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]) -> str:
     if isinstance(node, str):
         return _xml(_normalized_text(node))
@@ -462,11 +487,11 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
         local = image_paths.get(absolute)
         if not local:
             return ""
-        return f'<img src="{_xml(local)}" alt="{_xml(node.attrs.get("alt", "Article artwork"))}"/>'
+        return f'<img src="{_xml(local)}" {_image_accessibility_attributes(node)}/>'
     if node.tag == "br":
         return "<br/>"
     if node.tag == "hr":
-        return '<div class="scene-break" aria-label="Scene break">&#10022;</div>'
+        return SCENE_BREAK_XHTML
     if node.tag == "a":
         href = urljoin(article.source_url, node.attrs.get("href", ""))
         if not href.startswith(("http://", "https://", "mailto:")):
@@ -474,7 +499,7 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
         return f'<a href="{_xml(href)}">{body}</a>'
     if node.tag in {"span", "div"} and not plain and "<img " not in body:
         if node.tag == "div" and node.parent is article.content:
-            return '<div class="scene-break" aria-label="Scene break">&#10022;</div>'
+            return SCENE_BREAK_XHTML
         return body
     if tag == "div" and node.parent is article.content:
         if "<img " in body:
@@ -486,7 +511,7 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
     if tag == "p" and normalized_plain in {"HISTORIAN'S NOTE", "HISTORIANS NOTE"}:
         css_class = ' class="note-heading"'
     elif tag == "p" and plain in {"*", "* * *", "✦", "•"}:
-        return '<div class="scene-break" aria-label="Scene break">&#10022;</div>'
+        return SCENE_BREAK_XHTML
     elif tag in {"h2", "h3", "h4"}:
         css_class = ' class="section-heading"'
     elif tag == "blockquote":
@@ -496,7 +521,11 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
 
 def _render_story(article: Article, image_paths: dict[str, str]) -> str:
     rendered = "".join(_render_node(child, article, image_paths) for child in article.content.children)
-    rendered = re.sub(r"(?:\s*<div class=\"scene-break\"[^>]*>&#10022;</div>\s*){2,}", '<div class="scene-break" aria-label="Scene break">&#10022;</div>', rendered)
+    rendered = re.sub(
+        rf"(?:\s*{re.escape(SCENE_BREAK_XHTML)}\s*){{2,}}",
+        SCENE_BREAK_XHTML,
+        rendered,
+    )
     return rendered.strip()
 
 
@@ -766,8 +795,8 @@ def _render_cover_jpeg(article: Article, hero_asset: ImageAsset | None) -> bytes
 
 
 def _cover_body(article: Article) -> str:
-    return f'''<section class="cover-raster" epub:type="cover" aria-label="Cover of {_xml(article.title)}">
-<img role="doc-cover" src="../Images/cover.jpg" alt="{_xml(article.hero_alt or f'Cover of {article.title}')}"/></section>'''
+    return f'''<section class="cover-raster" epub:type="cover">
+<img role="doc-cover" src="../Images/cover.jpg" alt="{_xml(_cover_alt_text(article))}"/></section>'''
 
 
 def _build_epub(
@@ -848,6 +877,18 @@ def _build_epub(
 <meta refines="#producer" property="file-as">The Haruspis Assistant</meta>
 <meta name="cover" content="cover-image"/>
 <meta property="dcterms:modified">{modified}</meta>
+<meta property="schema:accessMode">textual</meta>
+<meta property="schema:accessMode">visual</meta>
+<meta property="schema:accessModeSufficient">textual</meta>
+<meta property="schema:accessModeSufficient">textual,visual</meta>
+<meta property="schema:accessibilityFeature">alternativeText</meta>
+<meta property="schema:accessibilityFeature">ARIA</meta>
+<meta property="schema:accessibilityFeature">displayTransformability</meta>
+<meta property="schema:accessibilityFeature">readingOrder</meta>
+<meta property="schema:accessibilityFeature">structuralNavigation</meta>
+<meta property="schema:accessibilityFeature">tableOfContents</meta>
+<meta property="schema:accessibilityHazard">none</meta>
+<meta property="schema:accessibilitySummary">The story is fully readable as reflowable text. The cover and source-described article images include alternative text. Supplemental images without source descriptions are marked decorative and may not convey their visual details to nonvisual readers.</meta>
 </metadata><manifest>
 <item id="css" href="Styles/book.css" media-type="text/css"/>
 <item id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>

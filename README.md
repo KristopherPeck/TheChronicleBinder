@@ -75,6 +75,7 @@ haruspis-assistant URL
 
 - EPUB 3 output with EPUB 2 navigation fallback for older readers
 - Semantic EPUB landmarks for the cover, title page, story, table of contents, and edition colophon
+- [W3C EPUB Accessibility 1.2](https://www.w3.org/TR/epub-a11y-12/) discovery metadata describing access modes, reflowability, navigation, image alternatives, and content hazards
 - A 1700×2400 artwork cover with the story title and Waypoint Chronicle treatment, packaged as both a raster cover image and the book's first page for Calibre, Kavita, and other library applications
 - Title and credits pages
 - A default Waypoint-inspired reading theme, with an optional classic black-and-white style
@@ -107,11 +108,14 @@ For library applications such as Calibre and Kavita, `cover.jpg` is explicitly i
 - `Halo Waypoint Chronicles` collection membership with the official release position; Battle for the Academy also carries its numbered subseries membership
 - Related-work metadata connecting `Halo: Saturn Devouring His Son` and its sequel `Halo: Ascension on Atropos`
 - The Haruspis Assistant identified as the ebook producer using the MARC `bkp` role
+- Accessibility discovery metadata for textual and visual content, sufficient access modes, navigation features, display transformability, and the absence of flashing, motion, or sound hazards
 - An optional author override for one-off corrections
 - Publisher set to `Halo Studios`
 - The standalone opening synopsis as the plot/description when present, otherwise the Historian's Note
 - Original Halo Waypoint article URL
 - EPUB conversion date
+
+Source-provided image descriptions are preserved as alternative text. Supplemental artwork without a source description is marked decorative rather than assigned an invented description, and the generated accessibility summary discloses that limitation. Scene breaks carry separator semantics, while source quotations remain native blockquotes. The converter does not claim formal WCAG or EPUB Accessibility conformance without a separate evaluation.
 
 ## Scope and troubleshooting
 

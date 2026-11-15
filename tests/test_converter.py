@@ -278,6 +278,18 @@ class ArticleParsingTests(unittest.TestCase):
                 self.assertIn("<dc:relation>https://www.halowaypoint.com/news/halo-earlier-story</dc:relation>", opf_text)
                 self.assertIn('<dc:contributor id="producer">The Haruspis Assistant</dc:contributor>', opf_text)
                 self.assertIn('<meta refines="#producer" property="role" scheme="marc:relators">bkp</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessMode">textual</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessMode">visual</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessModeSufficient">textual</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessModeSufficient">textual,visual</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">alternativeText</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">ARIA</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">displayTransformability</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">readingOrder</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">structuralNavigation</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityFeature">tableOfContents</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilityHazard">none</meta>', opf_text)
+                self.assertIn('<meta property="schema:accessibilitySummary">', opf_text)
                 title_page = book.read("OEBPS/Text/title.xhtml").decode("utf-8")
                 credits_page = book.read("OEBPS/Text/credits.xhtml").decode("utf-8")
                 self.assertIn("by Test Author and Second Author", title_page)
@@ -294,6 +306,7 @@ class ArticleParsingTests(unittest.TestCase):
                 self.assertIn('class="cover-raster"', cover_page)
                 self.assertIn('role="doc-cover"', cover_page)
                 self.assertIn('src="../Images/cover.jpg"', cover_page)
+                self.assertIn('alt="Cover of Halo: Test by Test Author and Second Author"', cover_page)
                 story_page = book.read("OEBPS/Text/story.xhtml").decode("utf-8")
                 nav_page = book.read("OEBPS/Text/nav.xhtml").decode("utf-8")
                 self.assertIn('epub:type="titlepage" aria-labelledby="title-page-heading"', title_page)
@@ -327,6 +340,40 @@ class ArticleParsingTests(unittest.TestCase):
                                 continue
                             target = posixpath.normpath(posixpath.join(posixpath.dirname(name), reference_path))
                             self.assertIn(target, names, f"Broken reference in {name}: {reference}")
+
+    def test_story_accessibility_preserves_alt_text_and_hides_undocumented_artwork(self):
+        content = Node("div")
+        described = Node(
+            "img",
+            {"src": "described.jpg", "alt": "A spacecraft above a planet."},
+            parent=content,
+        )
+        undescribed = Node("img", {"src": "undocumented.jpg", "alt": ""}, parent=content)
+        divider = Node("hr", parent=content)
+        quotation = Node("blockquote", parent=content)
+        quotation.children.append("A quoted transmission.")
+        content.children.extend((described, undescribed, divider, quotation))
+        article = Article(
+            "Halo: Accessible Test",
+            "Test Author",
+            "Waypoint Chronicles",
+            "https://www.halowaypoint.com/news/test",
+            None,
+            "",
+            content,
+        )
+        rendered = _render_story(
+            article,
+            {
+                "https://www.halowaypoint.com/news/described.jpg": "../Images/described.jpg",
+                "https://www.halowaypoint.com/news/undocumented.jpg": "../Images/undocumented.jpg",
+            },
+        )
+        self.assertIn('alt="A spacecraft above a planet."', rendered)
+        self.assertIn('alt="" role="presentation"', rendered)
+        self.assertIn('role="separator" aria-label="Scene break"', rendered)
+        self.assertIn('aria-hidden="true"', rendered)
+        self.assertIn('<blockquote class="epigraph">A quoted transmission.</blockquote>', rendered)
 
     def test_refuses_to_replace_an_existing_epub_without_permission(self):
         content = Node("div")
