@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
+from librarian_assistant.catalog import DEFAULT_AUTHORS, KNOWN_CHRONICLES, chronicle_for_url
 from librarian_assistant.converter import (
     Article,
     ConversionCancelled,
@@ -20,6 +21,8 @@ from librarian_assistant.converter import (
     _download_images,
     _render_cover_jpeg,
     _render_story,
+    _validate_source_url,
+    convert_url,
     parse_article,
 )
 
@@ -48,6 +51,31 @@ LEGACY_SAMPLE_PAGE = b'''<!doctype html><html><head>
 <div class="wordpress-content_content__legacy"><p>Legacy story text.</p></div>
 </article></body></html>'''
 
+DUAL_PLOT_SAMPLE_PAGE = b'''<!doctype html><html><head>
+<meta name="author" content="343 INDUSTRIES"/>
+<meta property="og:title" content="Halo: Venezian Sonata"/>
+</head><body><article>
+<div class="article-page_category__dual">Waypoint Chronicles</div>
+<h2 class="article-page_title__dual">Halo: Venezian Sonata</h2>
+<div class="wordpress-content_content__dual article-page_articleContent__dual">
+<p><em>September 2559. Captain Veronica Dare is deployed to Venezia on a reconnaissance mission.</em></p>
+<div></div><p>Available on Halo Waypoint and in other formats.</p><div></div>
+<p><strong>HISTORIAN'S NOTE</strong></p>
+<p><em>This story is set on September 22, 2559, before the assault on Zeta Halo.</em></p>
+<div></div><p>Story text.</p>
+</div></article></body></html>'''
+
+INLINE_NOTE_SAMPLE_PAGE = '''<!doctype html><html><head>
+<meta name="author" content="Halo Studios"/>
+<meta property="og:title" content="Halo: Veritas Aeterna"/>
+</head><body><article>
+<div class="article-page_category__inline">Waypoint Chronicles</div>
+<h2 class="article-page_title__inline">Halo: Veritas Aeterna</h2>
+<div class="wordpress-content_content__inline article-page_articleContent__inline">
+<p><strong>HISTORIAN’S NOTE</strong><br/><em>This story takes place on October 16, 2552, after the destruction of Alpha Halo.</em></p>
+<div></div><p>Story text.</p>
+</div></article></body></html>'''.encode("utf-8")
+
 
 def _sample_image_bytes(color: tuple[int, int, int] = (72, 110, 132)) -> bytes:
     data = io.BytesIO()
@@ -56,6 +84,47 @@ def _sample_image_bytes(color: tuple[int, int, int] = (72, 110, 132)) -> bytes:
 
 
 class ArticleParsingTests(unittest.TestCase):
+    def test_known_chronicle_catalog_has_unique_titles_and_urls(self):
+        titles = [entry.title for entry in KNOWN_CHRONICLES]
+        urls = [entry.url for entry in KNOWN_CHRONICLES]
+        self.assertEqual(len(KNOWN_CHRONICLES), 25)
+        self.assertEqual(len(titles), len(set(titles)))
+        self.assertEqual(len(urls), len(set(urls)))
+        self.assertIn("https://www.halowaypoint.com/news/halo-veritas-aeterna", urls)
+        self.assertNotIn("https://www.halowaypoint.com/news/halo-still-midnight", urls)
+        self.assertTrue(all("halowaypoint.com/news/" in url for url in urls))
+        self.assertTrue(all(entry.published.count("-") == 2 for entry in KNOWN_CHRONICLES))
+        self.assertTrue(all(entry.authors for entry in KNOWN_CHRONICLES))
+
+    def test_catalog_uses_joint_default_authors_and_specific_story_credits(self):
+        winter = chronicle_for_url("https://www.halowaypoint.com/en/news/halo-winter-contention")
+        elegy = chronicle_for_url("https://www.halowaypoint.com/news/halo-elegy")
+        foehammer = chronicle_for_url("https://www.halowaypoint.com/en-gb/news/halo-foehammers-last-flight")
+        self.assertIsNotNone(winter)
+        self.assertIsNotNone(elegy)
+        self.assertIsNotNone(foehammer)
+        self.assertEqual(winter.authors, DEFAULT_AUTHORS)
+        self.assertEqual(elegy.authors, ("Jeremy Patenaude",))
+        self.assertEqual(foehammer.authors, ("Kemi Ashing-Giwa",))
+        self.assertEqual(elegy.published, "2026-11-02")
+
+    def test_accepts_locale_prefixed_waypoint_news_urls(self):
+        url = "https://www.halowaypoint.com/en/news/halo-veritas-aeterna"
+        self.assertEqual(_validate_source_url(url), url)
+        self.assertEqual(
+            _validate_source_url("https://www.halowaypoint.com/en-us/news/halo-veritas-aeterna"),
+            "https://www.halowaypoint.com/en-us/news/halo-veritas-aeterna",
+        )
+
+    def test_rejects_news_indexes_and_unrelated_localized_paths(self):
+        for url in (
+            "https://www.halowaypoint.com/en/news",
+            "https://www.halowaypoint.com/en/games/halo-infinite",
+            "https://www.halowaypoint.com/en/news/story/extra",
+        ):
+            with self.subTest(url=url), self.assertRaises(ConversionError):
+                _validate_source_url(url)
+
     def test_extracts_waypoint_metadata_and_body(self):
         article = parse_article(SAMPLE_PAGE, "https://www.halowaypoint.com/news/test")
         self.assertEqual(article.title, "Halo: Test Chronicle")
@@ -73,6 +142,26 @@ class ArticleParsingTests(unittest.TestCase):
         article = parse_article(LEGACY_SAMPLE_PAGE, "https://www.halowaypoint.com/news/halo-4-vertical-umbrage")
         self.assertEqual(article.author, "343 INDUSTRIES")
         self.assertEqual(article.hero_url, "https://example.invalid/legacy-cover.jpg")
+
+    def test_opening_synopsis_takes_priority_over_historians_note(self):
+        article = parse_article(
+            DUAL_PLOT_SAMPLE_PAGE,
+            "https://www.halowaypoint.com/news/halo-venezian-sonata",
+        )
+        self.assertEqual(
+            article.plot,
+            "September 2559. Captain Veronica Dare is deployed to Venezia on a reconnaissance mission.",
+        )
+
+    def test_extracts_historians_note_when_heading_and_text_share_a_paragraph(self):
+        article = parse_article(
+            INLINE_NOTE_SAMPLE_PAGE,
+            "https://www.halowaypoint.com/news/halo-veritas-aeterna",
+        )
+        self.assertEqual(
+            article.plot,
+            "This story takes place on October 16, 2552, after the destruction of Alpha Halo.",
+        )
 
     def test_cover_title_lines_stay_within_target_width(self):
         lines = _cover_title_lines("Halo: An Exceptionallylongunbrokenword Chronicle")
@@ -92,6 +181,8 @@ class ArticleParsingTests(unittest.TestCase):
             hero_url=None,
             hero_alt="",
             content=content,
+            publication_date="2026-11-15",
+            additional_authors=("Second Author",),
         )
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "test.epub"
@@ -107,6 +198,12 @@ class ArticleParsingTests(unittest.TestCase):
                 opf_text = book.read("OEBPS/content.opf").decode("utf-8")
                 cover_page = book.read("OEBPS/Text/cover.xhtml").decode("utf-8")
                 self.assertIn("<dc:publisher>Halo Studios</dc:publisher>", opf_text)
+                self.assertIn("<dc:creator>Test Author</dc:creator><dc:creator>Second Author</dc:creator>", opf_text)
+                self.assertIn("<dc:date>2026-11-15</dc:date>", opf_text)
+                title_page = book.read("OEBPS/Text/title.xhtml").decode("utf-8")
+                credits_page = book.read("OEBPS/Text/credits.xhtml").decode("utf-8")
+                self.assertIn("by Test Author and Second Author", title_page)
+                self.assertIn("November 15, 2026", credits_page)
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf_text)
                 self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf_text)
                 self.assertIn('<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>', opf_text)
@@ -145,6 +242,60 @@ class ArticleParsingTests(unittest.TestCase):
             with self.assertRaises(ConversionError):
                 _build_epub(article, [], {}, output)
             self.assertEqual(output.read_bytes(), b"keep me")
+
+    def test_output_directory_uses_the_overridden_title_as_the_filename(self):
+        with tempfile.TemporaryDirectory() as directory:
+            expected = Path(directory) / "Archive Title.epub"
+            with (
+                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
+                patch("librarian_assistant.converter._build_epub") as build_epub,
+            ):
+                result = convert_url(
+                    "https://www.halowaypoint.com/news/test",
+                    output_directory=directory,
+                    title="Archive Title",
+                )
+            self.assertEqual(result.output_path, expected.resolve())
+            self.assertEqual(build_epub.call_args.args[3], expected)
+
+    def test_known_url_applies_catalog_authors_and_publication_date(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
+                patch("librarian_assistant.converter._build_epub") as build_epub,
+            ):
+                result = convert_url(
+                    "https://www.halowaypoint.com/en/news/halo-veritas-aeterna",
+                    output_directory=directory,
+                )
+            article = build_epub.call_args.args[0]
+            self.assertEqual(article.authors, DEFAULT_AUTHORS)
+            self.assertEqual(article.publication_date, "2026-11-15")
+            self.assertEqual(result.author, "Alex Wakeford and Jeff Easterling")
+
+    def test_manual_author_override_replaces_all_catalog_authors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with (
+                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
+                patch("librarian_assistant.converter._build_epub") as build_epub,
+            ):
+                convert_url(
+                    "https://www.halowaypoint.com/news/halo-veritas-aeterna",
+                    output_directory=directory,
+                    author="Override Author",
+                )
+            self.assertEqual(build_epub.call_args.args[0].authors, ("Override Author",))
+
+    def test_output_file_and_directory_are_mutually_exclusive(self):
+        with self.assertRaises(ConversionError):
+            convert_url(
+                "https://www.halowaypoint.com/news/test",
+                "book.epub",
+                output_directory="archive",
+            )
 
     def test_missing_artwork_is_skipped_with_a_warning(self):
         content = Node("div")

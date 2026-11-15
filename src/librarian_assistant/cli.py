@@ -11,7 +11,7 @@ from .converter import ConversionError, convert_url
 
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Convert a Halo Waypoint Chronicle into a polished EPUB.")
-    parser.add_argument("url", nargs="?", help="Public halowaypoint.com/news article URL")
+    parser.add_argument("url", nargs="?", help="Public Halo Waypoint news article URL")
     parser.add_argument("-o", "--output", type=Path, help="Destination .epub path")
     parser.add_argument("--title", help="Override the detected book title")
     parser.add_argument("--author", help="Override the detected author")

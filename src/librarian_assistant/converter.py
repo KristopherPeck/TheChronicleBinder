@@ -22,6 +22,8 @@ from urllib.request import Request, urlopen
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
+from .catalog import chronicle_for_url
+
 
 USER_AGENT = "TheHaruspisAssistant/0.1 (+personal EPUB converter)"
 ALLOWED_HOSTS = {"halowaypoint.com", "www.halowaypoint.com"}
@@ -118,6 +120,20 @@ class Article:
     hero_alt: str
     content: Node
     plot: str = ""
+    publication_date: str = ""
+    additional_authors: tuple[str, ...] = ()
+
+    @property
+    def authors(self) -> tuple[str, ...]:
+        """Return every credited writer in metadata order."""
+
+        return tuple(name for name in (self.author, *self.additional_authors) if name)
+
+    @property
+    def author_line(self) -> str:
+        """Return a human-readable joint byline."""
+
+        return " and ".join(self.authors)
 
 
 @dataclass(frozen=True)
@@ -167,14 +183,24 @@ def _image_source(node: Node | None) -> tuple[str, str]:
     return source, image.attrs.get("alt", "")
 
 
+def _inline_historian_note(text: str) -> str | None:
+    """Recognize a Historian's Note heading and return any same-node text."""
+
+    normalized = text.strip().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'")
+    match = re.fullmatch(r"HISTORIAN'?S NOTE\s*:?\s*(.*)", normalized, flags=re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else None
+
+
 def _historian_note(content: Node) -> str:
     """Extract the opening Historian's Note for ebook description metadata."""
 
     children = [child for child in content.children if isinstance(child, Node)]
     for index, node in enumerate(children):
-        heading = node.text().upper().replace("\N{RIGHT SINGLE QUOTATION MARK}", "'").rstrip(":")
-        if heading not in {"HISTORIAN'S NOTE", "HISTORIANS NOTE"}:
+        inline_note = _inline_historian_note(node.text())
+        if inline_note is None:
             continue
+        if inline_note:
+            return inline_note
         paragraphs: list[str] = []
         for candidate in children[index + 1:]:
             text = candidate.text().strip()
@@ -191,12 +217,34 @@ def _historian_note(content: Node) -> str:
     return ""
 
 
+def _opening_synopsis(content: Node) -> str:
+    """Return a short emphasized synopsis when Waypoint places one first."""
+
+    children = [child for child in content.children if isinstance(child, Node)]
+    for node in children:
+        text = node.text().strip()
+        if not text:
+            continue
+        if _inline_historian_note(text) is not None:
+            return ""
+        emphasized = next(node.descendants("em"), None) or next(node.descendants("i"), None)
+        if node.tag not in {"p", "blockquote"} or emphasized is None or len(text) > 1000:
+            return ""
+        return text
+    return ""
+
+
 def _validate_source_url(url: str) -> str:
     parsed = urlparse(url.strip())
     host = (parsed.hostname or "").lower()
     if parsed.scheme not in {"http", "https"} or host not in ALLOWED_HOSTS:
         raise ConversionError("Please enter a public halowaypoint.com article URL.")
-    if not parsed.path.startswith("/news/"):
+    news_path = re.fullmatch(
+        r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?news/[^/]+/?",
+        parsed.path,
+        flags=re.IGNORECASE,
+    )
+    if news_path is None:
         raise ConversionError("The URL must point to a Halo Waypoint news article.")
     return url.strip()
 
@@ -262,7 +310,8 @@ def parse_article(page: bytes, source_url: str) -> Article:
     hero_source = hero_source or _find_meta(root, "property", "og:image")
     hero_alt = hero_alt or _find_meta(root, "property", "og:image:alt") or "Cover artwork"
     hero_url = urljoin(source_url, hero_source) if hero_source else None
-    return Article(title, author, category, source_url, hero_url, hero_alt, content, _historian_note(content))
+    plot = _opening_synopsis(content) or _historian_note(content)
+    return Article(title, author, category, source_url, hero_url, hero_alt, content, plot)
 
 
 def _safe_filename(title: str) -> str:
@@ -655,15 +704,26 @@ def _build_epub(
     hero_asset = next((asset for asset in assets if asset.source_url == article.hero_url), None)
     cover_jpeg = _render_cover_jpeg(article, hero_asset)
     cover_body = _cover_body(article)
+    author_line = article.author_line
+    author_metadata = "".join(f"<dc:creator>{_xml(name)}</dc:creator>" for name in article.authors)
+    publication_metadata = f"<dc:date>{_xml(article.publication_date)}</dc:date>" if article.publication_date else ""
+    publication_credit = ""
+    if article.publication_date:
+        try:
+            publication_display = datetime.strptime(article.publication_date, "%Y-%m-%d").strftime("%B %d, %Y")
+        except ValueError:
+            publication_display = article.publication_date
+        publication_credit = f"<dt>Published</dt><dd>{_xml(publication_display)}</dd>"
     cover_page_style = "width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"
     title_body = f'''<section class="title-page" epub:type="titlepage">
 <div class="kicker">{_xml(article.category)}</div><h1>{_xml(article.title)}</h1><div class="rule"></div>
-<div class="byline">by {_xml(article.author)}</div>
+<div class="byline">by {_xml(author_line)}</div>
 <div class="imprint">A Halo Waypoint Chronicle<br/>Personal EPUB edition</div></section>'''
     story_body = f'''<header class="story-header"><div class="book-title">{_xml(article.title)}</div></header>
 <main epub:type="bodymatter">{_render_story(article, image_paths)}</main>'''
     credits_body = f'''<section class="credits"><h2 class="section-heading">Edition information</h2><dl>
-<dt>Story</dt><dd>{_xml(article.title)}</dd><dt>Author</dt><dd>{_xml(article.author)}</dd>
+<dt>Story</dt><dd>{_xml(article.title)}</dd><dt>{"Author" if len(article.authors) == 1 else "Authors"}</dt><dd>{_xml(author_line)}</dd>
+{publication_credit}
 <dt>Original publication</dt><dd><a href="{_xml(article.source_url)}">Halo Waypoint</a></dd>
 <dt>Converted</dt><dd>{_xml(datetime.now().astimezone().strftime("%B %d, %Y"))}</dd>
 </dl><p>This personal reading edition was generated from the publicly available article. Halo and its artwork remain the property of their respective rights holders.</p></section>'''
@@ -678,9 +738,9 @@ def _build_epub(
     opf = f'''<?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:identifier id="book-id">{identifier}</dc:identifier><dc:title>{_xml(article.title)}</dc:title><dc:creator>{_xml(article.author)}</dc:creator>
+<dc:identifier id="book-id">{identifier}</dc:identifier><dc:title>{_xml(article.title)}</dc:title>{author_metadata}
 <dc:language>en</dc:language><dc:publisher>Halo Studios</dc:publisher><dc:source>{_xml(article.source_url)}</dc:source>
-<dc:description>{_xml(article.plot)}</dc:description>
+<dc:description>{_xml(article.plot)}</dc:description>{publication_metadata}
 <meta name="cover" content="cover-image"/>
 <meta property="dcterms:modified">{modified}</meta>
 </metadata><manifest>
@@ -755,6 +815,7 @@ def convert_url(
     url: str,
     output: str | Path | None = None,
     *,
+    output_directory: str | Path | None = None,
     title: str | None = None,
     author: str | None = None,
     reading_style: str = "waypoint",
@@ -765,6 +826,8 @@ def convert_url(
     """Convert one public Halo Waypoint news article to an EPUB file."""
 
     notify = progress or (lambda _message: None)
+    if output is not None and output_directory is not None:
+        raise ConversionError("Choose either an output file or an output directory, not both.")
     if cancelled and cancelled():
         raise ConversionCancelled("Conversion cancelled.")
     source_url = _validate_source_url(url)
@@ -774,11 +837,20 @@ def convert_url(
         raise ConversionError(f"Expected a web page but received {content_type}.")
     notify("Reading story and metadata...")
     article = parse_article(page, source_url)
+    catalog_entry = chronicle_for_url(source_url)
+    if catalog_entry is not None:
+        article.author = catalog_entry.authors[0]
+        article.additional_authors = catalog_entry.authors[1:]
+        article.publication_date = catalog_entry.published
     if title and title.strip():
         article.title = title.strip()
     if author and author.strip():
         article.author = author.strip()
-    destination = Path(output).expanduser() if output else Path.cwd() / _safe_filename(article.title)
+        article.additional_authors = ()
+    if output_directory is not None:
+        destination = Path(output_directory).expanduser() / _safe_filename(article.title)
+    else:
+        destination = Path(output).expanduser() if output else Path.cwd() / _safe_filename(article.title)
     if destination.suffix.lower() != ".epub":
         destination = destination.with_suffix(".epub")
     if destination.exists() and not overwrite:
@@ -789,5 +861,5 @@ def convert_url(
     notify("Packaging EPUB...")
     _build_epub(article, assets, image_paths, destination, overwrite=overwrite, reading_style=reading_style)
     notify("Done")
-    return ConversionResult(destination.resolve(), article.title, article.author, len(assets), tuple(warnings))
+    return ConversionResult(destination.resolve(), article.title, article.author_line, len(assets), tuple(warnings))
 
