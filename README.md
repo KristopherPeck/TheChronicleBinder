@@ -74,6 +74,7 @@ haruspis-assistant URL
 ## What it creates
 
 - EPUB 3 output with EPUB 2 navigation fallback for older readers
+- Semantic EPUB landmarks for the cover, title page, story, table of contents, and edition colophon
 - A 1700×2400 artwork cover with the story title and Waypoint Chronicle treatment, packaged as both a raster cover image and the book's first page for Calibre, Kavita, and other library applications
 - Title and credits pages
 - A default Waypoint-inspired reading theme, with an optional classic black-and-white style
@@ -102,6 +103,10 @@ For library applications such as Calibre and Kavita, `cover.jpg` is explicitly i
 - Title detected from the article, with an optional override
 - Publication date and separate writer credits from the built-in catalog, sourced from [Halopedia's Waypoint Chronicle index](https://www.halopedia.org/Halo_Waypoint_Chronicle)
 - Alex Wakeford and Jeff Easterling as the default Chronicle writers; separately credited stories retain their specific writer (for example, Jeremy Patenaude for `Halo: Elegy` and Kemi Ashing-Giwa for `Halo: Foehammer's Last Flight`)
+- Standards-based author roles and sort names, a refined main title, `en-US` language, `Text` type, and `Science fiction` subject
+- `Halo Waypoint Chronicles` collection membership with the official release position; Battle for the Academy also carries its numbered subseries membership
+- Related-work metadata connecting `Halo: Saturn Devouring His Son` and its sequel `Halo: Ascension on Atropos`
+- The Haruspis Assistant identified as the ebook producer using the MARC `bkp` role
 - An optional author override for one-off corrections
 - Publisher set to `Halo Studios`
 - The standalone opening synopsis as the plot/description when present, otherwise the Historian's Note

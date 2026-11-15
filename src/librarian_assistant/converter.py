@@ -22,7 +22,7 @@ from urllib.request import Request, urlopen
 
 from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 
-from .catalog import chronicle_for_url
+from .catalog import PRIMARY_SERIES, ChronicleRelation, SeriesMembership, chronicle_for_url
 
 
 USER_AGENT = "TheHaruspisAssistant/0.1 (+personal EPUB converter)"
@@ -122,6 +122,8 @@ class Article:
     plot: str = ""
     publication_date: str = ""
     additional_authors: tuple[str, ...] = ()
+    series_memberships: tuple[SeriesMembership, ...] = ()
+    relations: tuple[ChronicleRelation, ...] = ()
 
     @property
     def authors(self) -> tuple[str, ...]:
@@ -227,8 +229,17 @@ def _opening_synopsis(content: Node) -> str:
             continue
         if _inline_historian_note(text) is not None:
             return ""
-        emphasized = next(node.descendants("em"), None) or next(node.descendants("i"), None)
-        if node.tag not in {"p", "blockquote"} or emphasized is None or len(text) > 1000:
+        meaningful_children = [
+            child
+            for child in node.children
+            if isinstance(child, Node) or (isinstance(child, str) and child.strip())
+        ]
+        fully_emphasized = (
+            len(meaningful_children) == 1
+            and isinstance(meaningful_children[0], Node)
+            and meaningful_children[0].tag in {"em", "i"}
+        )
+        if node.tag not in {"p", "blockquote"} or not fully_emphasized or len(text) > 1000:
             return ""
         return text
     return ""
@@ -387,6 +398,48 @@ def _xml(value: str) -> str:
     return html.escape(value, quote=True)
 
 
+def _file_as(name: str) -> str:
+    """Return a library-friendly sort name for a person or organization."""
+
+    normalized = name.strip()
+    if not normalized or "," in normalized:
+        return normalized
+    if normalized.casefold() in {"343 industries", "halo studios"}:
+        return normalized
+    parts = normalized.split()
+    if len(parts) < 2:
+        return normalized
+    return f"{parts[-1]}, {' '.join(parts[:-1])}"
+
+
+def _creator_metadata(article: Article) -> str:
+    entries: list[str] = []
+    for index, name in enumerate(article.authors, start=1):
+        creator_id = f"creator-{index}"
+        entries.extend(
+            (
+                f'<dc:creator id="{creator_id}">{_xml(name)}</dc:creator>',
+                f'<meta refines="#{creator_id}" property="role" scheme="marc:relators">aut</meta>',
+                f'<meta refines="#{creator_id}" property="file-as">{_xml(_file_as(name))}</meta>',
+            )
+        )
+    return "".join(entries)
+
+
+def _collection_metadata(article: Article) -> str:
+    entries: list[str] = []
+    for index, membership in enumerate(article.series_memberships, start=1):
+        collection_id = f"collection-{index}"
+        entries.extend(
+            (
+                f'<meta id="{collection_id}" property="belongs-to-collection">{_xml(membership.name)}</meta>',
+                f'<meta refines="#{collection_id}" property="collection-type">series</meta>',
+                f'<meta refines="#{collection_id}" property="group-position">{membership.position}</meta>',
+            )
+        )
+    return "".join(entries)
+
+
 def _normalized_text(value: str) -> str:
     return re.sub(r"\s+", " ", value)
 
@@ -504,7 +557,7 @@ def _xhtml(title: str, body: str, body_class: str = "", body_style: str = "") ->
     style_attr = f' style="{_xml(body_style)}"' if body_style else ""
     return f'''<?xml version="1.0" encoding="utf-8"?>
 <!DOCTYPE html>
-<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en">
+<html xmlns="http://www.w3.org/1999/xhtml" xmlns:epub="http://www.idpf.org/2007/ops" lang="en-US" xml:lang="en-US">
 <head><meta charset="utf-8"/><title>{_xml(title)}</title><link rel="stylesheet" type="text/css" href="../Styles/book.css"/></head>
 <body{class_attr}{style_attr}>{body}</body>
 </html>'''
@@ -514,6 +567,9 @@ def _cover_title_lines(title: str, target_length: int = 18) -> list[str]:
     """Split a title into a few balanced lines for the fixed-layout cover."""
 
     display_title = re.sub(r"^Halo:\s*", "", title, flags=re.IGNORECASE).strip().upper()
+    # A spaced dash separates title parts on Waypoint, but looks unbalanced once
+    # letterspaced on a cover. Preserve compound hyphens such as BLOOD-MOON.
+    display_title = re.sub(r"\s+[-\N{EN DASH}\N{EM DASH}]\s+", " ", display_title)
     words: list[str] = []
     for word in display_title.split():
         if len(word) <= target_length:
@@ -574,8 +630,31 @@ def _cover_font(size: int, *, bold: bool) -> ImageFont.ImageFont:
     return ImageFont.load_default(size=size)
 
 
+def _letterspaced_extents(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    font: ImageFont.ImageFont,
+    spacing: int,
+) -> tuple[float, float]:
+    """Return visible horizontal bounds for manually letterspaced text."""
+
+    cursor = 0.0
+    left: float | None = None
+    right: float | None = None
+    for character in text:
+        bounds = draw.textbbox((cursor, 0), character, font=font, anchor="lt")
+        if bounds[2] > bounds[0] and bounds[3] > bounds[1]:
+            left = float(bounds[0]) if left is None else min(left, float(bounds[0]))
+            right = float(bounds[2]) if right is None else max(right, float(bounds[2]))
+        cursor += draw.textlength(character, font=font) + spacing
+    if left is None or right is None:
+        return 0.0, max(0.0, cursor - spacing)
+    return left, right
+
+
 def _letterspaced_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, spacing: int) -> float:
-    return sum(draw.textlength(character, font=font) for character in text) + max(0, len(text) - 1) * spacing
+    left, right = _letterspaced_extents(draw, text, font, spacing)
+    return right - left
 
 
 def _draw_centered_letterspaced(
@@ -588,7 +667,8 @@ def _draw_centered_letterspaced(
     fill: str,
     canvas_width: int,
 ) -> None:
-    x = (canvas_width - _letterspaced_width(draw, text, font, spacing)) / 2
+    left, right = _letterspaced_extents(draw, text, font, spacing)
+    x = (canvas_width - (right - left)) / 2 - left
     for character in text:
         draw.text((x, y), character, font=font, fill=fill, anchor="lt")
         x += draw.textlength(character, font=font) + spacing
@@ -687,7 +767,7 @@ def _render_cover_jpeg(article: Article, hero_asset: ImageAsset | None) -> bytes
 
 def _cover_body(article: Article) -> str:
     return f'''<section class="cover-raster" epub:type="cover" aria-label="Cover of {_xml(article.title)}">
-<img src="../Images/cover.jpg" alt="{_xml(article.hero_alt or f'Cover of {article.title}')}"/></section>'''
+<img role="doc-cover" src="../Images/cover.jpg" alt="{_xml(article.hero_alt or f'Cover of {article.title}')}"/></section>'''
 
 
 def _build_epub(
@@ -705,7 +785,9 @@ def _build_epub(
     cover_jpeg = _render_cover_jpeg(article, hero_asset)
     cover_body = _cover_body(article)
     author_line = article.author_line
-    author_metadata = "".join(f"<dc:creator>{_xml(name)}</dc:creator>" for name in article.authors)
+    author_metadata = _creator_metadata(article)
+    collection_metadata = _collection_metadata(article)
+    relation_metadata = "".join(f"<dc:relation>{_xml(relation.url)}</dc:relation>" for relation in article.relations)
     publication_metadata = f"<dc:date>{_xml(article.publication_date)}</dc:date>" if article.publication_date else ""
     publication_credit = ""
     if article.publication_date:
@@ -714,21 +796,39 @@ def _build_epub(
         except ValueError:
             publication_display = article.publication_date
         publication_credit = f"<dt>Published</dt><dd>{_xml(publication_display)}</dd>"
+    series_credit = "".join(
+        f'<dt>{"Series" if index == 0 else "Additional series"}</dt><dd>{_xml(membership.name)} #{membership.position}</dd>'
+        for index, membership in enumerate(article.series_memberships)
+    )
+    relation_credit = "".join(
+        f'<dt>Related work</dt><dd>{_xml(relation.label)} <a href="{_xml(relation.url)}">{_xml(relation.title)}</a></dd>'
+        for relation in article.relations
+    )
     cover_page_style = "width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"
-    title_body = f'''<section class="title-page" epub:type="titlepage">
-<div class="kicker">{_xml(article.category)}</div><h1>{_xml(article.title)}</h1><div class="rule"></div>
+    title_body = f'''<section class="title-page" epub:type="titlepage" aria-labelledby="title-page-heading">
+<div class="kicker">{_xml(article.category)}</div><h1 id="title-page-heading">{_xml(article.title)}</h1><div class="rule"></div>
 <div class="byline">by {_xml(author_line)}</div>
 <div class="imprint">A Halo Waypoint Chronicle<br/>Personal EPUB edition</div></section>'''
-    story_body = f'''<header class="story-header"><div class="book-title">{_xml(article.title)}</div></header>
-<main epub:type="bodymatter">{_render_story(article, image_paths)}</main>'''
-    credits_body = f'''<section class="credits"><h2 class="section-heading">Edition information</h2><dl>
+    story_body = f'''<header class="story-header"><h1 id="story-heading" class="book-title">{_xml(article.title)}</h1></header>
+<main id="bodymatter" epub:type="bodymatter" aria-labelledby="story-heading">{_render_story(article, image_paths)}</main>'''
+    credits_body = f'''<section class="credits" epub:type="colophon" role="doc-colophon" aria-labelledby="colophon-heading"><h1 id="colophon-heading" class="section-heading">Edition information</h1><dl>
 <dt>Story</dt><dd>{_xml(article.title)}</dd><dt>{"Author" if len(article.authors) == 1 else "Authors"}</dt><dd>{_xml(author_line)}</dd>
 {publication_credit}
+{series_credit}
+{relation_credit}
 <dt>Original publication</dt><dd><a href="{_xml(article.source_url)}">Halo Waypoint</a></dd>
+<dt>Ebook producer</dt><dd>The Haruspis Assistant</dd>
 <dt>Converted</dt><dd>{_xml(datetime.now().astimezone().strftime("%B %d, %Y"))}</dd>
 </dl><p>This personal reading edition was generated from the publicly available article. Halo and its artwork remain the property of their respective rights holders.</p></section>'''
-    nav_body = f'''<nav epub:type="toc" id="toc"><h1>Contents</h1><ol>
-<li><a href="title.xhtml">{_xml(article.title)}</a></li><li><a href="story.xhtml">Story</a></li><li><a href="credits.xhtml">Edition information</a></li>
+    nav_body = f'''<nav epub:type="toc" id="toc" role="doc-toc" aria-labelledby="toc-heading"><h1 id="toc-heading">Contents</h1><ol>
+<li><a href="title.xhtml">{_xml(article.title)}</a></li><li><a href="story.xhtml#bodymatter">Story</a></li><li><a href="credits.xhtml">Edition information</a></li>
+</ol></nav>
+<nav epub:type="landmarks" aria-labelledby="landmarks-heading"><h2 id="landmarks-heading">Guide</h2><ol>
+<li><a epub:type="cover" href="cover.xhtml">Cover</a></li>
+<li><a epub:type="titlepage" href="title.xhtml">Title page</a></li>
+<li><a epub:type="bodymatter" href="story.xhtml#bodymatter">Start of story</a></li>
+<li><a epub:type="colophon" href="credits.xhtml">Edition information</a></li>
+<li><a epub:type="toc" href="#toc">Table of contents</a></li>
 </ol></nav>'''
 
     stylesheet = _stylesheet(reading_style)
@@ -736,11 +836,16 @@ def _build_epub(
     for index, asset in enumerate(assets, start=1):
         image_manifest.append(f'<item id="image{index}" href="Images/{_xml(asset.filename)}" media-type="{_xml(asset.media_type)}"/>' )
     opf = f'''<?xml version="1.0" encoding="utf-8"?>
-<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en">
+<package xmlns="http://www.idpf.org/2007/opf" version="3.0" unique-identifier="book-id" xml:lang="en-US">
 <metadata xmlns:dc="http://purl.org/dc/elements/1.1/">
-<dc:identifier id="book-id">{identifier}</dc:identifier><dc:title>{_xml(article.title)}</dc:title>{author_metadata}
-<dc:language>en</dc:language><dc:publisher>Halo Studios</dc:publisher><dc:source>{_xml(article.source_url)}</dc:source>
-<dc:description>{_xml(article.plot)}</dc:description>{publication_metadata}
+<dc:identifier id="book-id">{identifier}</dc:identifier><dc:title id="title">{_xml(article.title)}</dc:title>
+<meta refines="#title" property="title-type">main</meta>{author_metadata}
+<dc:language>en-US</dc:language><dc:type>Text</dc:type><dc:subject>Science fiction</dc:subject>
+<dc:publisher>Halo Studios</dc:publisher>{publication_metadata}<dc:source>{_xml(article.source_url)}</dc:source>
+<dc:description>{_xml(article.plot)}</dc:description>{relation_metadata}{collection_metadata}
+<dc:contributor id="producer">The Haruspis Assistant</dc:contributor>
+<meta refines="#producer" property="role" scheme="marc:relators">bkp</meta>
+<meta refines="#producer" property="file-as">The Haruspis Assistant</meta>
 <meta name="cover" content="cover-image"/>
 <meta property="dcterms:modified">{modified}</meta>
 </metadata><manifest>
@@ -754,13 +859,13 @@ def _build_epub(
 <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
 {''.join(image_manifest)}</manifest>
 <spine toc="ncx"><itemref idref="cover" linear="yes"/><itemref idref="title"/><itemref idref="story"/><itemref idref="credits"/><itemref idref="nav" linear="no"/></spine>
-<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>
+<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/><reference type="title-page" title="Title page" href="Text/title.xhtml"/><reference type="text" title="Story" href="Text/story.xhtml#bodymatter"/><reference type="colophon" title="Edition information" href="Text/credits.xhtml"/></guide>
 </package>'''
     ncx = f'''<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="{identifier}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
 <docTitle><text>{_xml(article.title)}</text></docTitle><navMap>
 <navPoint id="nav1" playOrder="1"><navLabel><text>{_xml(article.title)}</text></navLabel><content src="Text/title.xhtml"/></navPoint>
-<navPoint id="nav2" playOrder="2"><navLabel><text>Story</text></navLabel><content src="Text/story.xhtml"/></navPoint>
+<navPoint id="nav2" playOrder="2"><navLabel><text>Story</text></navLabel><content src="Text/story.xhtml#bodymatter"/></navPoint>
 <navPoint id="nav3" playOrder="3"><navLabel><text>Edition information</text></navLabel><content src="Text/credits.xhtml"/></navPoint>
 </navMap></ncx>'''
     container = '''<?xml version="1.0" encoding="utf-8"?>
@@ -842,6 +947,11 @@ def convert_url(
         article.author = catalog_entry.authors[0]
         article.additional_authors = catalog_entry.authors[1:]
         article.publication_date = catalog_entry.published
+        article.series_memberships = (
+            SeriesMembership(PRIMARY_SERIES, catalog_entry.series_position),
+            *catalog_entry.additional_series,
+        )
+        article.relations = catalog_entry.relations
     if title and title.strip():
         article.title = title.strip()
     if author and author.strip():

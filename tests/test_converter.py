@@ -9,7 +9,14 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from librarian_assistant.catalog import DEFAULT_AUTHORS, KNOWN_CHRONICLES, chronicle_for_url
+from librarian_assistant.catalog import (
+    DEFAULT_AUTHORS,
+    PRIMARY_SERIES,
+    KNOWN_CHRONICLES,
+    ChronicleRelation,
+    SeriesMembership,
+    chronicle_for_url,
+)
 from librarian_assistant.converter import (
     Article,
     ConversionCancelled,
@@ -76,6 +83,19 @@ INLINE_NOTE_SAMPLE_PAGE = '''<!doctype html><html><head>
 <div></div><p>Story text.</p>
 </div></article></body></html>'''.encode("utf-8")
 
+PROMO_THEN_NOTE_SAMPLE_PAGE = b'''<!doctype html><html><head>
+<meta name="author" content="343 INDUSTRIES"/>
+<meta property="og:title" content="Halo: Winter Contention"/>
+</head><body><article>
+<div class="article-page_category__promo">Waypoint Chronicles</div>
+<h2 class="article-page_title__promo">Halo: Winter Contention</h2>
+<div class="wordpress-content_content__promo article-page_articleContent__promo">
+<p>Experience the return of Noble Team in <em>Halo: Winter Contention</em> <a href="book.pdf">in a free PDF</a>, or listen on YouTube.</p>
+<div></div><p><strong>HISTORIAN'S NOTE</strong></p>
+<p><em>Halo: Winter Contention is set in December 2551, before the fall of Reach.</em></p>
+<div></div><p>Story text.</p>
+</div></article></body></html>'''
+
 
 def _sample_image_bytes(color: tuple[int, int, int] = (72, 110, 132)) -> bytes:
     data = io.BytesIO()
@@ -95,6 +115,7 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertTrue(all("halowaypoint.com/news/" in url for url in urls))
         self.assertTrue(all(entry.published.count("-") == 2 for entry in KNOWN_CHRONICLES))
         self.assertTrue(all(entry.authors for entry in KNOWN_CHRONICLES))
+        self.assertEqual(len({entry.series_position for entry in KNOWN_CHRONICLES}), len(KNOWN_CHRONICLES))
 
     def test_catalog_uses_joint_default_authors_and_specific_story_credits(self):
         winter = chronicle_for_url("https://www.halowaypoint.com/en/news/halo-winter-contention")
@@ -107,6 +128,17 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertEqual(elegy.authors, ("Jeremy Patenaude",))
         self.assertEqual(foehammer.authors, ("Kemi Ashing-Giwa",))
         self.assertEqual(elegy.published, "2026-11-02")
+
+    def test_catalog_tracks_subseries_and_narrative_relationships(self):
+        academy_one = chronicle_for_url("https://www.halowaypoint.com/news/halo-battle-for-the-academy-part-1")
+        academy_two = chronicle_for_url("https://www.halowaypoint.com/news/halo-battle-for-the-academy-part-2")
+        ascension = chronicle_for_url("https://www.halowaypoint.com/news/halo-ascension-on-atropos")
+        saturn = chronicle_for_url("https://www.halowaypoint.com/news/halo-saturn-devouring-his-son")
+        self.assertEqual(academy_one.series_position, 17)
+        self.assertEqual(academy_one.additional_series, (SeriesMembership("Battle for the Academy", 1),))
+        self.assertEqual(academy_two.additional_series, (SeriesMembership("Battle for the Academy", 2),))
+        self.assertEqual(ascension.relations[0].label, "Sequel to")
+        self.assertEqual(saturn.relations[0].label, "Followed by")
 
     def test_accepts_locale_prefixed_waypoint_news_urls(self):
         url = "https://www.halowaypoint.com/en/news/halo-veritas-aeterna"
@@ -163,10 +195,27 @@ class ArticleParsingTests(unittest.TestCase):
             "This story takes place on October 16, 2552, after the destruction of Alpha Halo.",
         )
 
+    def test_promotional_intro_is_not_used_as_the_plot(self):
+        article = parse_article(
+            PROMO_THEN_NOTE_SAMPLE_PAGE,
+            "https://www.halowaypoint.com/news/halo-winter-contention",
+        )
+        self.assertEqual(
+            article.plot,
+            "Halo: Winter Contention is set in December 2551, before the fall of Reach.",
+        )
+
     def test_cover_title_lines_stay_within_target_width(self):
         lines = _cover_title_lines("Halo: An Exceptionallylongunbrokenword Chronicle")
         self.assertTrue(lines)
         self.assertTrue(all(len(line) <= 18 for line in lines))
+
+    def test_cover_title_omits_spaced_separator_dashes_but_keeps_compound_hyphens(self):
+        self.assertEqual(
+            _cover_title_lines("Halo: Battle for the Academy - Part 2"),
+            ["BATTLE FOR THE", "ACADEMY PART 2"],
+        )
+        self.assertIn("BLOOD-MOON", _cover_title_lines("Halo: Battle for the Blood-Moon"))
 
     def test_builds_epub_with_required_first_entry_and_navigation(self):
         content = Node("div")
@@ -183,6 +232,17 @@ class ArticleParsingTests(unittest.TestCase):
             content=content,
             publication_date="2026-11-15",
             additional_authors=("Second Author",),
+            series_memberships=(
+                SeriesMembership(PRIMARY_SERIES, 28),
+                SeriesMembership("Test Subseries", 1),
+            ),
+            relations=(
+                ChronicleRelation(
+                    "Sequel to",
+                    "Halo: Earlier Story",
+                    "https://www.halowaypoint.com/news/halo-earlier-story",
+                ),
+            ),
         )
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "test.epub"
@@ -198,18 +258,46 @@ class ArticleParsingTests(unittest.TestCase):
                 opf_text = book.read("OEBPS/content.opf").decode("utf-8")
                 cover_page = book.read("OEBPS/Text/cover.xhtml").decode("utf-8")
                 self.assertIn("<dc:publisher>Halo Studios</dc:publisher>", opf_text)
-                self.assertIn("<dc:creator>Test Author</dc:creator><dc:creator>Second Author</dc:creator>", opf_text)
+                self.assertIn('<dc:title id="title">Halo: Test</dc:title>', opf_text)
+                self.assertIn('<meta refines="#title" property="title-type">main</meta>', opf_text)
+                self.assertIn('<dc:creator id="creator-1">Test Author</dc:creator>', opf_text)
+                self.assertIn('<meta refines="#creator-1" property="role" scheme="marc:relators">aut</meta>', opf_text)
+                self.assertIn('<meta refines="#creator-1" property="file-as">Author, Test</meta>', opf_text)
+                self.assertIn('<dc:creator id="creator-2">Second Author</dc:creator>', opf_text)
                 self.assertIn("<dc:date>2026-11-15</dc:date>", opf_text)
+                self.assertIn("<dc:language>en-US</dc:language>", opf_text)
+                self.assertIn("<dc:type>Text</dc:type>", opf_text)
+                self.assertIn("<dc:subject>Science fiction</dc:subject>", opf_text)
+                self.assertIn('<meta id="collection-1" property="belongs-to-collection">Halo Waypoint Chronicles</meta>', opf_text)
+                self.assertIn('<meta refines="#collection-1" property="group-position">28</meta>', opf_text)
+                self.assertIn('<meta id="collection-2" property="belongs-to-collection">Test Subseries</meta>', opf_text)
+                self.assertIn("<dc:relation>https://www.halowaypoint.com/news/halo-earlier-story</dc:relation>", opf_text)
+                self.assertIn('<dc:contributor id="producer">The Haruspis Assistant</dc:contributor>', opf_text)
+                self.assertIn('<meta refines="#producer" property="role" scheme="marc:relators">bkp</meta>', opf_text)
                 title_page = book.read("OEBPS/Text/title.xhtml").decode("utf-8")
                 credits_page = book.read("OEBPS/Text/credits.xhtml").decode("utf-8")
                 self.assertIn("by Test Author and Second Author", title_page)
                 self.assertIn("November 15, 2026", credits_page)
+                self.assertIn("Halo Waypoint Chronicles #28", credits_page)
+                self.assertIn("Test Subseries #1", credits_page)
+                self.assertIn("Sequel to", credits_page)
+                self.assertIn("Ebook producer", credits_page)
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf_text)
                 self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf_text)
-                self.assertIn('<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>', opf_text)
+                self.assertIn('<reference type="cover" title="Cover" href="Text/cover.xhtml"/>', opf_text)
+                self.assertIn('<reference type="text" title="Story" href="Text/story.xhtml#bodymatter"/>', opf_text)
                 self.assertIn('style="width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"', cover_page)
                 self.assertIn('class="cover-raster"', cover_page)
+                self.assertIn('role="doc-cover"', cover_page)
                 self.assertIn('src="../Images/cover.jpg"', cover_page)
+                story_page = book.read("OEBPS/Text/story.xhtml").decode("utf-8")
+                nav_page = book.read("OEBPS/Text/nav.xhtml").decode("utf-8")
+                self.assertIn('epub:type="titlepage" aria-labelledby="title-page-heading"', title_page)
+                self.assertIn('id="bodymatter" epub:type="bodymatter" aria-labelledby="story-heading"', story_page)
+                self.assertIn('epub:type="colophon" role="doc-colophon"', credits_page)
+                self.assertIn('epub:type="toc" id="toc" role="doc-toc"', nav_page)
+                self.assertIn('epub:type="landmarks"', nav_page)
+                self.assertIn('epub:type="bodymatter" href="story.xhtml#bodymatter"', nav_page)
                 names = set(book.namelist())
                 xml_names = [
                     name for name in names
@@ -230,7 +318,10 @@ class ArticleParsingTests(unittest.TestCase):
                             reference = element.attrib.get(attribute)
                             if not reference or reference.startswith(("http://", "https://", "mailto:", "#")):
                                 continue
-                            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), reference))
+                            reference_path = reference.split("#", 1)[0]
+                            if not reference_path:
+                                continue
+                            target = posixpath.normpath(posixpath.join(posixpath.dirname(name), reference_path))
                             self.assertIn(target, names, f"Broken reference in {name}: {reference}")
 
     def test_refuses_to_replace_an_existing_epub_without_permission(self):
@@ -273,6 +364,7 @@ class ArticleParsingTests(unittest.TestCase):
             article = build_epub.call_args.args[0]
             self.assertEqual(article.authors, DEFAULT_AUTHORS)
             self.assertEqual(article.publication_date, "2026-11-15")
+            self.assertEqual(article.series_memberships, (SeriesMembership(PRIMARY_SERIES, 28),))
             self.assertEqual(result.author, "Alex Wakeford and Jeff Easterling")
 
     def test_manual_author_override_replaces_all_catalog_authors(self):
@@ -368,10 +460,12 @@ class ArticleParsingTests(unittest.TestCase):
                 css = book.read("OEBPS/Styles/book.css").decode("utf-8")
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf)
                 self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf)
-                self.assertIn('<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>', opf)
+                self.assertIn('<reference type="cover" title="Cover" href="Text/cover.xhtml"/>', opf)
+                self.assertIn('<reference type="colophon" title="Edition information" href="Text/credits.xhtml"/>', opf)
                 self.assertIn('id="image1" href="Images/hero.png" media-type="image/png"/>', opf)
                 cover_page = book.read("OEBPS/Text/cover.xhtml").decode("utf-8")
                 self.assertIn('class="cover-raster"', cover_page)
+                self.assertIn('role="doc-cover"', cover_page)
                 self.assertIn('src="../Images/cover.jpg"', cover_page)
                 with Image.open(io.BytesIO(book.read("OEBPS/Images/cover.jpg"))) as cover_image:
                     self.assertEqual(cover_image.size, (1700, 2400))
