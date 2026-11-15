@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 import zipfile
@@ -6,6 +7,8 @@ import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest.mock import patch
 
+from PIL import Image
+
 from librarian_assistant.converter import (
     Article,
     ConversionCancelled,
@@ -13,9 +16,9 @@ from librarian_assistant.converter import (
     ImageAsset,
     Node,
     _build_epub,
-    _cover_svg,
     _cover_title_lines,
     _download_images,
+    _render_cover_jpeg,
     _render_story,
     parse_article,
 )
@@ -34,6 +37,23 @@ SAMPLE_PAGE = b'''<!doctype html><html><head>
 <p>First paragraph with <strong>bold</strong> text.<script>do_not_render()</script></p>
 </div></article></body></html>'''
 
+LEGACY_SAMPLE_PAGE = b'''<!doctype html><html><head>
+<meta name="author" content="343 INDUSTRIES"/>
+<meta property="og:title" content="Halo 4 | VERTICAL UMBRAGE"/>
+<meta property="og:image" content="https://example.invalid/legacy-cover.jpg"/>
+</head><body><article>
+<div class="article-page_category__legacy">Waypoint Chronicles</div>
+<h2 class="article-page_title__legacy">Halo 4 | VERTICAL UMBRAGE</h2>
+<div class="article-page_subtitle__legacy">Everything Has Gone Wrong (...Well, Not Everything)</div>
+<div class="wordpress-content_content__legacy"><p>Legacy story text.</p></div>
+</article></body></html>'''
+
+
+def _sample_image_bytes(color: tuple[int, int, int] = (72, 110, 132)) -> bytes:
+    data = io.BytesIO()
+    Image.new("RGB", (640, 360), color).save(data, format="JPEG")
+    return data.getvalue()
+
 
 class ArticleParsingTests(unittest.TestCase):
     def test_extracts_waypoint_metadata_and_body(self):
@@ -48,6 +68,11 @@ class ArticleParsingTests(unittest.TestCase):
         rendered = _render_story(article, {})
         self.assertIn('class="note-heading"', rendered)
         self.assertNotIn("do_not_render", rendered)
+
+    def test_legacy_teaser_is_not_mistaken_for_the_author(self):
+        article = parse_article(LEGACY_SAMPLE_PAGE, "https://www.halowaypoint.com/news/halo-4-vertical-umbrage")
+        self.assertEqual(article.author, "343 INDUSTRIES")
+        self.assertEqual(article.hero_url, "https://example.invalid/legacy-cover.jpg")
 
     def test_cover_title_lines_stay_within_target_width(self):
         lines = _cover_title_lines("Halo: An Exceptionallylongunbrokenword Chronicle")
@@ -77,16 +102,17 @@ class ArticleParsingTests(unittest.TestCase):
                 self.assertEqual(first.compress_type, zipfile.ZIP_STORED)
                 self.assertIn("OEBPS/content.opf", book.namelist())
                 self.assertIn("OEBPS/Text/nav.xhtml", book.namelist())
-                self.assertIn("OEBPS/Images/cover.svg", book.namelist())
+                self.assertIn("OEBPS/Images/cover.jpg", book.namelist())
                 self.assertEqual(book.read("mimetype"), b"application/epub+zip")
                 opf_text = book.read("OEBPS/content.opf").decode("utf-8")
                 cover_page = book.read("OEBPS/Text/cover.xhtml").decode("utf-8")
                 self.assertIn("<dc:publisher>Halo Studios</dc:publisher>", opf_text)
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf_text)
-                self.assertIn('id="cover-image" href="Images/cover.svg" media-type="image/svg+xml" properties="cover-image"', opf_text)
-                self.assertNotIn("<guide>", opf_text)
-                self.assertIn('style="margin:0;padding:0;max-width:none;background:#10191d;text-align:center;overflow:hidden"', cover_page)
-                self.assertIn('style="display:block;width:100%;height:auto;margin:0;padding:0;border:0"', cover_page)
+                self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf_text)
+                self.assertIn('<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>', opf_text)
+                self.assertIn('style="width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"', cover_page)
+                self.assertIn('class="cover-raster"', cover_page)
+                self.assertIn('src="../Images/cover.jpg"', cover_page)
                 names = set(book.namelist())
                 xml_names = [
                     name for name in names
@@ -141,23 +167,36 @@ class ArticleParsingTests(unittest.TestCase):
         with self.assertRaises(ConversionCancelled):
             _download_images(article, lambda _message: None, lambda: True)
 
-    def test_designed_cover_keeps_full_artwork_over_a_filled_backdrop(self):
+    def test_designed_cover_renders_a_portrait_jpeg_with_a_black_lower_field(self):
         content = Node("div")
-        article = Article("Halo: Test", "Author", "Waypoint Chronicles", "https://www.halowaypoint.com/news/test", "https://example.invalid/hero.png", "Hero", content)
-        hero = ImageAsset(article.hero_url, "hero.png", "image/png", b"not used")
-        cover = _cover_svg(article, hero)
-        self.assertIn('width="1700" height="2400" viewBox="0 0 1700 2400"', cover)
-        self.assertIn('style="background:#10191d"', cover)
-        self.assertIn('preserveAspectRatio="xMidYMid slice"', cover)
-        self.assertIn("data:image/png;base64,", cover)
-        self.assertNotIn('href="hero.png"', cover)
-        self.assertNotIn("#a54a2a", cover)
-        self.assertIn('stop offset="0.84" stop-color="#000000" stop-opacity="0.96"', cover)
-        self.assertIn('text-anchor="middle"', cover)
-        self.assertIn('letter-spacing="14"', cover)
-        self.assertIn('A HALO WAYPOINT CHRONICLE', cover)
+        article = Article("Halo: Test", "Author", "Waypoint Chronicles", "https://www.halowaypoint.com/news/test", "https://example.invalid/hero.jpg", "Hero", content)
+        hero = ImageAsset(article.hero_url, "hero.jpg", "image/jpeg", _sample_image_bytes())
+        cover = _render_cover_jpeg(article, hero)
+        self.assertTrue(cover.startswith(b"\xff\xd8\xff"))
+        with Image.open(io.BytesIO(cover)) as image:
+            self.assertEqual(image.size, (1700, 2400))
+            self.assertLess(max(image.getpixel((850, 2300))), 15)
 
-    def test_designed_cover_is_declared_for_calibre_and_plot_metadata(self):
+    def test_winter_contention_keeps_its_precomposed_cover_treatment(self):
+        content = Node("div")
+        article = Article(
+            "Halo: Winter Contention",
+            "343 INDUSTRIES",
+            "Waypoint Chronicles",
+            "https://www.halowaypoint.com/news/halo-winter-contention",
+            "https://example.invalid/winter.jpg",
+            "Cover for Halo: Winter Contention",
+            content,
+        )
+        hero = ImageAsset(article.hero_url, "winter.jpg", "image/jpeg", _sample_image_bytes((180, 80, 60)))
+        cover = _render_cover_jpeg(article, hero)
+        with Image.open(io.BytesIO(cover)) as image:
+            self.assertEqual(image.size, (1700, 2400))
+            red, green, blue = image.getpixel((850, 2300))
+            self.assertGreater(red, green)
+            self.assertGreater(red, blue)
+
+    def test_designed_cover_uses_renderable_cover_page_and_plot_metadata(self):
         content = Node("div")
         article = Article(
             "Halo: Test",
@@ -169,7 +208,7 @@ class ArticleParsingTests(unittest.TestCase):
             content,
             "The story's Historian's Note.",
         )
-        hero = ImageAsset(article.hero_url, "hero.png", "image/png", b"image bytes")
+        hero = ImageAsset(article.hero_url, "hero.png", "image/png", _sample_image_bytes())
         with tempfile.TemporaryDirectory() as directory:
             output = Path(directory) / "test.epub"
             _build_epub(article, [hero], {article.hero_url: "../Images/hero.png"}, output, reading_style="classic")
@@ -177,8 +216,20 @@ class ArticleParsingTests(unittest.TestCase):
                 opf = book.read("OEBPS/content.opf").decode("utf-8")
                 css = book.read("OEBPS/Styles/book.css").decode("utf-8")
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf)
-                self.assertIn('id="cover-image" href="Images/cover.svg" media-type="image/svg+xml" properties="cover-image"', opf)
+                self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf)
+                self.assertIn('<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>', opf)
                 self.assertIn('id="image1" href="Images/hero.png" media-type="image/png"/>', opf)
+                cover_page = book.read("OEBPS/Text/cover.xhtml").decode("utf-8")
+                self.assertIn('class="cover-raster"', cover_page)
+                self.assertIn('src="../Images/cover.jpg"', cover_page)
+                with Image.open(io.BytesIO(book.read("OEBPS/Images/cover.jpg"))) as cover_image:
+                    self.assertEqual(cover_image.size, (1700, 2400))
+                self.assertIn("body { margin: 0; padding: 0; max-width: none; box-sizing: border-box;", css)
+                self.assertNotIn("max-width: 38em", css)
+                self.assertNotIn("@page", css)
+                self.assertIn("hyphens: auto", css)
+                self.assertIn("p { margin: 0 0 0.85em;", css)
+                self.assertIn("overflow-wrap: break-word", css)
                 self.assertIn("<dc:description>The story&#x27;s Historian&#x27;s Note.</dc:description>", opf)
                 self.assertIn("background: #ffffff", css)
                 self.assertIn("color: inherit", css)

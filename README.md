@@ -2,7 +2,7 @@
 
 The Haruspis Assistant turns a Halo Waypoint Chronicle into a self-contained EPUB. It keeps the story text, emphasis, scene breaks, links, and article artwork, then applies a book design inspired by the official Waypoint Chronicle PDFs.
 
-It uses only Python's standard library. No browser automation, Node, Docker, Calibre, or external Python packages are required.
+It uses Python plus Pillow for portable raster cover generation. No browser automation, Node, Docker, or Calibre installation is required.
 
 <p align="center">
   <img src="screenshots/gui_example.png" alt="The Haruspis Assistant desktop interface" width="720"/>
@@ -18,11 +18,17 @@ I loved how the previous Waypoint Chronicles included a PDF for people to have a
 ## Quick start (Windows)
 
 1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). During installation, enable **Add Python to PATH**.
-2. Double-click `run_gui.bat`.
-3. Paste a Halo Waypoint article URL and choose where to save the EPUB.
-4. Select **Official-inspired color** or **Classic black and white**, then select **Create EPUB**.
+2. Open PowerShell in this folder and install the required Python package:
 
-The first launch does not install anything. The batch file runs the application directly from this folder.
+   ```powershell
+   python -m pip install -r requirements.txt
+   ```
+
+3. Double-click `run_gui.bat`.
+4. Paste a Halo Waypoint article URL and choose where to save the EPUB.
+5. Select **Official-inspired color** or **Classic black and white**, then select **Create EPUB**.
+
+The batch files run the application directly from this folder and show an installation reminder if Pillow is unavailable.
 
 ## Command line
 
@@ -65,9 +71,10 @@ haruspis-assistant URL
 ## What it creates
 
 - EPUB 3 output with EPUB 2 navigation fallback for older readers
-- A full-bleed artwork cover with the story title and Waypoint Chronicle treatment, declared as the metadata cover for Calibre and other library applications
+- A 1700×2400 artwork cover with the story title and Waypoint Chronicle treatment, packaged as both a raster cover image and the book's first page for Calibre, Kavita, and other library applications
 - Title and credits pages
 - A default Waypoint-inspired reading theme, with an optional classic black-and-white style
+- Reflowable, column-safe book typography with reader-controlled margins, paragraph indents, and hyphenation
 - Embedded article images, links, italics, bold text, headings, lists, and scene breaks
 - Halo Studios publisher metadata, the Historian's Note as the plot/description, plus the source URL and conversion date
 - Recoverable artwork downloads, bounded file sizes, and cancellation from the desktop interface
@@ -76,13 +83,17 @@ Reader apps can override fonts, colors, margins, and line spacing. The design in
 
 ## Covers and metadata
 
-The converter uses the article's lead artwork for the designed in-book cover. The artwork is embedded directly into that cover so it remains visible in readers that do not resolve linked SVG artwork reliably.
+The converter uses the article's lead artwork to generate a single 1700×2400 JPEG containing the gradient, title, divider, chevron, and Chronicle label. That raster file is used by the in-book cover page and is declared through both EPUB 3 and legacy cover metadata, so library servers do not have to render an XHTML or SVG cover to discover the portrait artwork.
+
+`Halo: Winter Contention` is handled as a precomposed cover because its source artwork already includes the title, divider, and Waypoint Chronicle label. The converter preserves that original treatment instead of adding a duplicate title layer.
+
+Fort Foundry lists the Halo Series among users of its commercial [Industry](https://fortfoundry.com/fonts/industry) family. If Industry or Industry Inc is installed on the computer creating the EPUB, the converter rasterizes it into the cover automatically. The font files are not bundled; Bahnschrift and common sans-serif fonts provide the fallback treatment.
 
 <p align="center">
   <img src="screenshots/cover_example.jpeg" alt="Example Waypoint Chronicle cover generated for Halo: Elegy" width="420"/>
 </p>
 
-For library applications such as Calibre, the complete designed cover is identified as the book's metadata cover rather than the original landscape artwork. Generated EPUB metadata includes:
+For library applications such as Calibre and Kavita, `cover.jpg` is explicitly identified as the cover image while the matching cover page remains first in the reading order. This prevents servers from choosing the original landscape artwork as a fallback. Generated EPUB metadata includes:
 
 - Title and author detected from the article, with optional overrides
 - Publisher set to `Halo Studios`

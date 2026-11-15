@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
-import base64
 import hashlib
 import html
+import io
 import mimetypes
+import os
 import re
 import tempfile
 import uuid
@@ -19,11 +20,14 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
 from urllib.request import Request, urlopen
 
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+
 
 USER_AGENT = "TheHaruspisAssistant/0.1 (+personal EPUB converter)"
 ALLOWED_HOSTS = {"halowaypoint.com", "www.halowaypoint.com"}
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
+PRECOMPOSED_COVER_SLUGS = {"halo-winter-contention"}
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 CONTENT_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "li", "figure", "figcaption", "img", "hr", "br", "strong", "b", "em", "i", "a", "span", "sup", "sub"}
 DISCARDED_TAGS = {"script", "style", "noscript", "template", "iframe", "object"}
@@ -251,7 +255,8 @@ def parse_article(page: bytes, source_url: str) -> Article:
     if not title:
         raise ConversionError("The article title was not found.")
     subtitle = subtitle_node.text() if subtitle_node else ""
-    author = re.sub(r"^\s*By\s+", "", subtitle, flags=re.IGNORECASE).strip() or _find_meta(root, "name", "author") or "Halo Studios"
+    byline = re.fullmatch(r"\s*By\s+(.+?)\s*", subtitle, flags=re.IGNORECASE)
+    author = (byline.group(1).strip() if byline else "") or _find_meta(root, "name", "author") or "Halo Studios"
     category = category_node.text() if category_node else "Waypoint Chronicle"
     hero_source, hero_alt = _image_source(hero_node)
     hero_source = hero_source or _find_meta(root, "property", "og:image")
@@ -394,16 +399,15 @@ def _render_story(article: Article, image_paths: dict[str, str]) -> str:
 
 
 WAYPOINT_CSS = """@charset "utf-8";
-@page { margin: 5%; }
-html { color: #202a2f; background: #f4f0e7; }
-body { margin: 0 auto; padding: 0 5%; max-width: 38em; font-family: Georgia, "Times New Roman", serif; font-size: 1em; line-height: 1.58; }
-p { margin: 0 0 0.85em; text-align: justify; orphans: 2; widows: 2; }
+html { color: #202a2f; background: #f4f0e7; -webkit-hyphens: auto; hyphens: auto; }
+body { margin: 0; padding: 0; max-width: none; box-sizing: border-box; font-family: Georgia, "Times New Roman", serif; font-size: 1em; font-kerning: normal; font-variant-ligatures: common-ligatures; line-height: 1.58; }
+p { margin: 0 0 0.85em; overflow-wrap: break-word; text-align: justify; orphans: 2; widows: 2; }
 p + p { text-indent: 1.25em; }
 .note-heading + p, .section-heading + p, .scene-break + p, blockquote + p { text-indent: 0; }
 a { color: #176579; text-decoration: underline; }
-.cover-body { margin: 0; padding: 0; max-width: none; background: #10191d; text-align: center; }
-.cover { margin: 0; padding: 0; }
-.cover img { display: block; width: 100%; height: auto; max-height: 100vh; object-fit: contain; }
+.cover-body { width: 100%; height: 100vh; margin: 0; padding: 0; max-width: none; background: #000000; text-align: center; overflow: hidden; }
+.cover-raster { width: 100%; height: 100vh; margin: 0; padding: 0; }
+.cover-raster img { display: block; width: 100%; height: 100%; max-width: none; max-height: none; margin: 0; object-fit: contain; }
 .title-page { min-height: 80vh; padding-top: 18vh; text-align: center; }
 .kicker { color: #337d8f; font: bold 0.72em/1.3 Arial, sans-serif; letter-spacing: 0.22em; text-transform: uppercase; }
 h1 { margin: 0.35em 0 0.25em; color: #17252b; font: normal 2.5em/1.04 Georgia, serif; letter-spacing: 0.025em; text-transform: uppercase; }
@@ -482,45 +486,159 @@ def _cover_title_lines(title: str, target_length: int = 18) -> list[str]:
     return lines
 
 
-def _cover_svg(article: Article, hero_asset: ImageAsset | None) -> str:
-    cover_width = 1700
-    cover_height = 2400
-    title_x = cover_width // 2
-    title_letter_spacing = 14
-    rule_y = cover_height - 420
-    subtitle_y = cover_height - 315
-    lines = _cover_title_lines(article.title)
-    longest_line = max(len(line) for line in lines)
-    available_width = (cover_width - 320) - (max(longest_line - 1, 0) * title_letter_spacing)
-    width_limited_size = int(available_width / max(longest_line * 0.62, 1))
-    height_limited_size = int(560 / max(len(lines) * 1.18, 1))
-    font_size = max(28, min(132, width_limited_size, height_limited_size))
-    line_height = int(font_size * 1.18)
-    title_start = (rule_y - 115) - ((len(lines) - 1) * line_height)
-    title_spans = "".join(
-        f'<tspan x="{title_x}" y="{title_start + index * line_height}">{_xml(line)}</tspan>'
-        for index, line in enumerate(lines)
-    )
-    if hero_asset:
-        encoded_artwork = base64.b64encode(hero_asset.data).decode("ascii")
-        artwork = (
-            f'<rect width="{cover_width}" height="{cover_height}" fill="#10191d"/>'
-            f'<image href="data:{_xml(hero_asset.media_type)};base64,{encoded_artwork}" '
-            f'xlink:href="data:{_xml(hero_asset.media_type)};base64,{encoded_artwork}" '
-            f'x="0" y="0" width="{cover_width}" height="{cover_height}" preserveAspectRatio="xMidYMid slice"/>'
+def _cover_font(size: int, *, bold: bool) -> ImageFont.ImageFont:
+    """Load an installed Industry face when available, with portable fallbacks."""
+
+    font_names = (
+        (
+            "Industry-Black.otf",
+            "Industry Black.otf",
+            "IndustryInc-Base.otf",
+            "IndustryInc-Base.ttf",
+            "bahnschrift.ttf",
+            "arialbd.ttf",
+            "DejaVuSansCondensed-Bold.ttf",
         )
-    else:
-        artwork = f'<rect width="{cover_width}" height="{cover_height}" fill="#17262d"/><path d="M0 340 L{cover_width} 0 M0 760 L{cover_width} 420 M0 1180 L{cover_width} 840" stroke="#285865" stroke-width="3" opacity="0.55"/>'
-    return f'''<?xml version="1.0" encoding="utf-8"?>
-<svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="{cover_width}" height="{cover_height}" viewBox="0 0 {cover_width} {cover_height}" style="background:#10191d" role="img" aria-labelledby="cover-title cover-description">
-<title id="cover-title">{_xml(article.title)}</title><desc id="cover-description">{_xml(article.hero_alt or "Halo Waypoint Chronicle cover")}</desc>
-<defs><linearGradient id="shade" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#000000" stop-opacity="0"/><stop offset="0.58" stop-color="#000000" stop-opacity="0"/><stop offset="0.72" stop-color="#000000" stop-opacity="0.42"/><stop offset="0.84" stop-color="#000000" stop-opacity="0.96"/><stop offset="1" stop-color="#000000" stop-opacity="1"/></linearGradient></defs>
-{artwork}<rect x="0" y="0" width="{cover_width}" height="{cover_height}" fill="url(#shade)"/>
-<g fill="#ffffff" font-family="Arial Black, Arial, Helvetica, sans-serif" text-anchor="middle"><text font-size="{font_size}" font-weight="800" letter-spacing="{title_letter_spacing}">{title_spans}</text>
-<g fill="none" stroke="#73c8d7" stroke-width="3"><path d="M220 {rule_y} H{title_x - 70}"/><path d="M{title_x + 70} {rule_y} H{cover_width - 220}"/></g>
-<g fill="none" stroke="#73c8d7" stroke-linecap="square"><path d="M{title_x - 38} {rule_y - 9} L{title_x} {rule_y + 25} L{title_x + 38} {rule_y - 9}" stroke-width="8"/><path d="M{title_x - 20} {rule_y - 9} L{title_x} {rule_y + 8} L{title_x + 20} {rule_y - 9}" stroke-width="4"/></g>
-<text x="{title_x}" y="{subtitle_y}" font-family="Arial, Helvetica, sans-serif" font-size="43" font-weight="600" letter-spacing="16">A HALO WAYPOINT CHRONICLE</text></g>
-</svg>'''
+        if bold
+        else (
+            "Industry-Medium.otf",
+            "Industry Medium.otf",
+            "Industry.otf",
+            "bahnschrift.ttf",
+            "arial.ttf",
+            "DejaVuSans.ttf",
+        )
+    )
+    roots = [
+        Path(os.environ.get("WINDIR", "C:/Windows")) / "Fonts",
+        Path.home() / "AppData/Local/Microsoft/Windows/Fonts",
+        Path("/usr/share/fonts/truetype/dejavu"),
+        Path("/Library/Fonts"),
+        Path.home() / "Library/Fonts",
+    ]
+    for name in font_names:
+        for candidate in [*(root / name for root in roots), Path(name)]:
+            try:
+                return ImageFont.truetype(str(candidate), size=size)
+            except OSError:
+                continue
+    return ImageFont.load_default(size=size)
+
+
+def _letterspaced_width(draw: ImageDraw.ImageDraw, text: str, font: ImageFont.ImageFont, spacing: int) -> float:
+    return sum(draw.textlength(character, font=font) for character in text) + max(0, len(text) - 1) * spacing
+
+
+def _draw_centered_letterspaced(
+    draw: ImageDraw.ImageDraw,
+    text: str,
+    y: int,
+    font: ImageFont.ImageFont,
+    spacing: int,
+    *,
+    fill: str,
+    canvas_width: int,
+) -> None:
+    x = (canvas_width - _letterspaced_width(draw, text, font, spacing)) / 2
+    for character in text:
+        draw.text((x, y), character, font=font, fill=fill, anchor="lt")
+        x += draw.textlength(character, font=font) + spacing
+
+
+def _render_cover_jpeg(article: Article, hero_asset: ImageAsset | None) -> bytes:
+    """Render one portable raster cover for EPUB readers and library servers."""
+
+    width, height = 1700, 2400
+    canvas = Image.new("RGB", (width, height), "#17262d")
+    if hero_asset:
+        try:
+            with Image.open(io.BytesIO(hero_asset.data)) as source:
+                source = ImageOps.exif_transpose(source).convert("RGB")
+                canvas = ImageOps.fit(
+                    source,
+                    (width, height),
+                    method=Image.Resampling.LANCZOS,
+                    centering=(0.5, 0.5),
+                )
+        except (OSError, UnidentifiedImageError):
+            pass
+
+    article_slug = urlparse(article.source_url).path.rstrip("/").rsplit("/", 1)[-1].lower()
+    if not (hero_asset and article_slug in PRECOMPOSED_COVER_SLUGS):
+        gradient = Image.new("L", (1, height))
+        alpha: list[int] = []
+        for y in range(height):
+            position = y / height
+            if position < 0.48:
+                opacity = 0
+            elif position < 0.64:
+                opacity = round(115 * (position - 0.48) / 0.16)
+            elif position < 0.72:
+                opacity = round(115 + 115 * (position - 0.64) / 0.08)
+            elif position < 0.78:
+                opacity = round(230 + 25 * (position - 0.72) / 0.06)
+            else:
+                opacity = 255
+            alpha.append(opacity)
+        gradient.putdata(alpha)
+        gradient = gradient.resize((width, height))
+        shade = Image.new("RGBA", (width, height), "#000000")
+        shade.putalpha(gradient)
+        canvas = Image.alpha_composite(canvas.convert("RGBA"), shade).convert("RGB")
+
+        draw = ImageDraw.Draw(canvas)
+        title_lines = _cover_title_lines(article.title)
+        title_size = 132
+        title_spacing = 7
+        while title_size > 54:
+            title_font = _cover_font(title_size, bold=True)
+            if max(_letterspaced_width(draw, line, title_font, title_spacing) for line in title_lines) <= 1450:
+                break
+            title_size -= 4
+        title_font = _cover_font(title_size, bold=True)
+        line_height = round(title_size * 1.04)
+        title_top = 1900 - line_height * len(title_lines)
+        for index, line in enumerate(title_lines):
+            _draw_centered_letterspaced(
+                draw,
+                line,
+                title_top + index * line_height,
+                title_font,
+                title_spacing,
+                fill="#ffffff",
+                canvas_width=width,
+            )
+
+        divider_y = 1954
+        center = width // 2
+        draw.line((130, divider_y, center - 90, divider_y), fill="#b9d7dc", width=3)
+        draw.line((center + 90, divider_y, width - 130, divider_y), fill="#b9d7dc", width=3)
+        draw.line((center - 62, divider_y - 9, center, divider_y + 45, center + 62, divider_y - 9), fill="#f4f7f8", width=9, joint="curve")
+        draw.line((center - 31, divider_y - 9, center, divider_y + 18, center + 31, divider_y - 9), fill="#55cfe3", width=9, joint="curve")
+
+        label = "A HALO WAYPOINT CHRONICLE"
+        label_font = _cover_font(43, bold=False)
+        label_spacing = 17
+        while _letterspaced_width(draw, label, label_font, label_spacing) > 1450 and label_spacing > 4:
+            label_spacing -= 1
+        _draw_centered_letterspaced(
+            draw,
+            label,
+            2040,
+            label_font,
+            label_spacing,
+            fill="#ffffff",
+            canvas_width=width,
+        )
+
+    output = io.BytesIO()
+    canvas.save(output, format="JPEG", quality=94, optimize=True, progressive=True)
+    return output.getvalue()
+
+
+def _cover_body(article: Article) -> str:
+    return f'''<section class="cover-raster" epub:type="cover" aria-label="Cover of {_xml(article.title)}">
+<img src="../Images/cover.jpg" alt="{_xml(article.hero_alt or f'Cover of {article.title}')}"/></section>'''
 
 
 def _build_epub(
@@ -535,9 +653,9 @@ def _build_epub(
     identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, article.source_url)}"
     modified = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
     hero_asset = next((asset for asset in assets if asset.source_url == article.hero_url), None)
-    cover_svg = _cover_svg(article, hero_asset)
-    cover_body = f'<section class="cover" style="margin:0;padding:0"><img src="../Images/cover.svg" alt="Cover of {_xml(article.title)}" style="display:block;width:100%;height:auto;margin:0;padding:0;border:0"/></section>'
-    cover_page_style = "margin:0;padding:0;max-width:none;background:#10191d;text-align:center;overflow:hidden"
+    cover_jpeg = _render_cover_jpeg(article, hero_asset)
+    cover_body = _cover_body(article)
+    cover_page_style = "width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"
     title_body = f'''<section class="title-page" epub:type="titlepage">
 <div class="kicker">{_xml(article.category)}</div><h1>{_xml(article.title)}</h1><div class="rule"></div>
 <div class="byline">by {_xml(article.author)}</div>
@@ -563,19 +681,20 @@ def _build_epub(
 <dc:identifier id="book-id">{identifier}</dc:identifier><dc:title>{_xml(article.title)}</dc:title><dc:creator>{_xml(article.author)}</dc:creator>
 <dc:language>en</dc:language><dc:publisher>Halo Studios</dc:publisher><dc:source>{_xml(article.source_url)}</dc:source>
 <dc:description>{_xml(article.plot)}</dc:description>
-<meta property="dcterms:modified">{modified}</meta>
 <meta name="cover" content="cover-image"/>
+<meta property="dcterms:modified">{modified}</meta>
 </metadata><manifest>
 <item id="css" href="Styles/book.css" media-type="text/css"/>
+<item id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"/>
 <item id="cover" href="Text/cover.xhtml" media-type="application/xhtml+xml"/>
 <item id="title" href="Text/title.xhtml" media-type="application/xhtml+xml"/>
 <item id="story" href="Text/story.xhtml" media-type="application/xhtml+xml"/>
 <item id="credits" href="Text/credits.xhtml" media-type="application/xhtml+xml"/>
 <item id="nav" href="Text/nav.xhtml" media-type="application/xhtml+xml" properties="nav"/>
 <item id="ncx" href="toc.ncx" media-type="application/x-dtbncx+xml"/>
-<item id="cover-image" href="Images/cover.svg" media-type="image/svg+xml" properties="cover-image"/>
 {''.join(image_manifest)}</manifest>
 <spine toc="ncx"><itemref idref="cover" linear="yes"/><itemref idref="title"/><itemref idref="story"/><itemref idref="credits"/><itemref idref="nav" linear="no"/></spine>
+<guide><reference type="cover" title="Cover" href="Text/cover.xhtml"/></guide>
 </package>'''
     ncx = f'''<?xml version="1.0" encoding="utf-8"?>
 <ncx xmlns="http://www.daisy.org/z3986/2005/ncx/" version="2005-1"><head><meta name="dtb:uid" content="{identifier}"/><meta name="dtb:depth" content="1"/><meta name="dtb:totalPageCount" content="0"/><meta name="dtb:maxPageNumber" content="0"/></head>
@@ -608,7 +727,7 @@ def _build_epub(
             book.writestr("OEBPS/content.opf", opf, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/toc.ncx", ncx, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Styles/book.css", stylesheet, compress_type=zipfile.ZIP_DEFLATED)
-            book.writestr("OEBPS/Images/cover.svg", cover_svg, compress_type=zipfile.ZIP_DEFLATED)
+            book.writestr("OEBPS/Images/cover.jpg", cover_jpeg, compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/cover.xhtml", _xhtml(article.title, cover_body, "cover-body", cover_page_style), compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/title.xhtml", _xhtml(article.title, title_body), compress_type=zipfile.ZIP_DEFLATED)
             book.writestr("OEBPS/Text/story.xhtml", _xhtml(article.title, story_body), compress_type=zipfile.ZIP_DEFLATED)
