@@ -142,7 +142,7 @@ The project does not claim formal WCAG or EPUB Accessibility conformance without
 
 The application has no accounts, analytics, telemetry, advertising, or generative-AI calls. It requests only the selected Waypoint article and raster artwork hosted on approved Halo and Waypoint domains. Generated EPUBs are written only to the chosen local destination.
 
-The converter accepts HTTPS `halowaypoint.com/news/...` URLs, including locale-prefixed variants. Redirects and artwork downloads must remain on an approved HTTPS host. SVG and other active or unsupported image formats are rejected. Article pages are limited to 10 MB, individual images to 40 MB, articles to 100 images, and total artwork to 250 MB.
+The converter accepts HTTPS `halowaypoint.com/news/...` URLs, including locale-prefixed variants. Redirects and artwork downloads must remain on an approved HTTPS host. YouTube thumbnail assets are not fetched; the approved Waypoint hero artwork is reused in their place when available. On articles without a video thumbnail, hero artwork is placed once at the start of the story unless the same image already appears in the body. SVG and other active or unsupported image formats are rejected. Article pages are limited to 10 MB, individual images to 40 MB, articles to 100 images, and total artwork to 250 MB.
 
 ## Supported scope and limitations
 

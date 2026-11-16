@@ -482,6 +482,69 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertEqual(len(warnings), 1)
         self.assertTrue(any(message.startswith("Warning:") for message in messages))
 
+    def test_youtube_thumbnail_reuses_approved_hero_artwork_without_downloading_it(self):
+        hero_url = "https://wpassets.halowaypoint.com/wp-content/2026/hero.jpg"
+        youtube_url = "https://i.ytimg.com/vi/example/maxresdefault.jpg"
+        content = Node("div")
+        wrapper = Node("div", parent=content)
+        wrapper.children.append(Node("img", {"src": youtube_url, "alt": "Video thumbnail"}, parent=wrapper))
+        content.children.append(wrapper)
+        article = Article(
+            "Halo: Test",
+            "Author",
+            "Waypoint Chronicles",
+            "https://www.halowaypoint.com/news/test",
+            hero_url,
+            "A Spartan standing beneath city lights.",
+            content,
+        )
+        hero_data = _sample_image_bytes()
+        with patch("chronicle_binder.converter._download", return_value=(hero_data, "image/jpeg")) as download:
+            assets, replacements, warnings = _download_images(article, lambda _message: None)
+        rendered = _render_story(article, replacements)
+        self.assertEqual(download.call_count, 1)
+        self.assertEqual(len(assets), 1)
+        self.assertEqual(warnings, [])
+        self.assertIn(replacements[hero_url], rendered)
+        self.assertIn('alt="A Spartan standing beneath city lights."', rendered)
+        self.assertNotIn("Video thumbnail", rendered)
+
+    def test_story_prepends_hero_when_no_video_thumbnail_or_matching_body_image_exists(self):
+        hero_url = "https://wpassets.halowaypoint.com/wp-content/2026/hero.jpg"
+        content = Node("div")
+        paragraph = Node("p", parent=content)
+        paragraph.children.append("Opening story text.")
+        content.children.append(paragraph)
+        article = Article(
+            "Halo: Elegy",
+            "Author",
+            "Waypoint Chronicles",
+            "https://www.halowaypoint.com/news/halo-elegy",
+            hero_url,
+            "Elegy cover artwork.",
+            content,
+        )
+        rendered = _render_story(article, {hero_url: "../Images/hero.jpg"})
+        self.assertTrue(rendered.startswith('<figure class="article-image article-hero">'))
+        self.assertEqual(rendered.count("../Images/hero.jpg"), 1)
+        self.assertIn('alt="Elegy cover artwork."', rendered)
+
+    def test_story_does_not_duplicate_a_hero_already_present_in_the_body(self):
+        hero_url = "https://wpassets.halowaypoint.com/wp-content/2026/hero.jpg"
+        content = Node("div")
+        content.children.append(Node("img", {"src": hero_url, "alt": "Elegy cover artwork."}, parent=content))
+        article = Article(
+            "Halo: Elegy",
+            "Author",
+            "Waypoint Chronicles",
+            "https://www.halowaypoint.com/news/halo-elegy",
+            hero_url,
+            "Elegy cover artwork.",
+            content,
+        )
+        rendered = _render_story(article, {hero_url: "../Images/hero.jpg"})
+        self.assertEqual(rendered.count("../Images/hero.jpg"), 1)
+
     def test_image_type_requires_an_approved_raster_signature(self):
         jpeg = _sample_image_bytes()
         self.assertEqual(

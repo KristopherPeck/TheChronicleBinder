@@ -13,4 +13,5 @@ All notable changes to The Chronicle Binder are documented here.
 - EPUB 2 navigation fallback, semantic landmarks, and EPUB Accessibility discovery metadata.
 - Cancellation, overwrite protection, bounded downloads, and recoverable artwork failures.
 - HTTPS-only host and redirect validation, raster image allowlisting, aggregate artwork limits, and hardened Pillow processing.
+- Approved Waypoint hero artwork within stories, replacing blocked YouTube thumbnails or opening articles without one.
 - Public-release documentation, fan-project notices, contributor guidance, and a private GitHub security-reporting policy.

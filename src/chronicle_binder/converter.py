@@ -52,6 +52,7 @@ ARTWORK_HOSTS = frozenset(
         "content.halocdn.com",
     }
 )
+YOUTUBE_THUMBNAIL_HOSTS = frozenset({"i.ytimg.com", "img.youtube.com"})
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
 MAX_IMAGE_COUNT = 100
@@ -430,15 +431,28 @@ def _guess_image_type(url: str, content_type: str, data: bytes) -> tuple[str, st
     )
 
 
-def _collect_image_urls(article: Article) -> list[str]:
+def _content_image_urls(article: Article) -> list[str]:
+    """Return absolute image URLs in article-body order."""
+
     urls: list[str] = []
-    if article.hero_url:
-        urls.append(article.hero_url)
     for node in article.content.descendants("img"):
-        source = node.attrs.get("src") or node.attrs.get("data-src")
+        source, _alt = _image_source(node)
         if source:
             urls.append(urljoin(article.source_url, source))
     return list(dict.fromkeys(urls))
+
+
+def _collect_image_urls(article: Article) -> list[str]:
+    urls = [article.hero_url] if article.hero_url else []
+    urls.extend(_content_image_urls(article))
+    return list(dict.fromkeys(urls))
+
+
+def _is_youtube_thumbnail_url(url: str) -> bool:
+    """Identify video thumbnails that must not be fetched as article artwork."""
+
+    parsed = urlparse(url)
+    return parsed.scheme.lower() in {"http", "https"} and (parsed.hostname or "").lower() in YOUTUBE_THUMBNAIL_HOSTS
 
 
 def _download_images(
@@ -449,7 +463,7 @@ def _download_images(
     assets: list[ImageAsset] = []
     replacements: dict[str, str] = {}
     warnings: list[str] = []
-    image_urls = _collect_image_urls(article)
+    image_urls = [url for url in _collect_image_urls(article) if not _is_youtube_thumbnail_url(url)]
     if len(image_urls) > MAX_IMAGE_COUNT:
         warning = f"Warning: article references {len(image_urls)} images; only the first {MAX_IMAGE_COUNT} will be downloaded."
         warnings.append(warning)
@@ -560,6 +574,15 @@ def _image_accessibility_attributes(node: Node) -> str:
     return 'alt="" role="presentation"'
 
 
+def _hero_image_accessibility_attributes(article: Article) -> str:
+    """Describe hero artwork when it appears within the story."""
+
+    source_alt = _normalized_text(article.hero_alt).strip()
+    if not source_alt or source_alt.casefold() in {"article artwork", "cover artwork"}:
+        source_alt = f"Article artwork for {article.title}"
+    return f'alt="{_xml(source_alt)}"'
+
+
 def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]) -> str:
     if isinstance(node, str):
         return _xml(_normalized_text(node))
@@ -573,9 +596,13 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
     plain = node.text().strip()
 
     if node.tag == "img":
-        source = node.attrs.get("src") or node.attrs.get("data-src", "")
+        source, _alt = _image_source(node)
         absolute = urljoin(article.source_url, source)
         local = image_paths.get(absolute)
+        if not local and _is_youtube_thumbnail_url(absolute) and article.hero_url:
+            local = image_paths.get(article.hero_url)
+            if local:
+                return f'<img src="{_xml(local)}" {_hero_image_accessibility_attributes(article)}/>'
         if not local:
             return ""
         return f'<img src="{_xml(local)}" {_image_accessibility_attributes(node)}/>'
@@ -611,7 +638,20 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
 
 
 def _render_story(article: Article, image_paths: dict[str, str]) -> str:
+    content_image_urls = _content_image_urls(article)
     rendered = "".join(_render_node(child, article, image_paths) for child in article.content.children)
+    if (
+        article.hero_url
+        and article.hero_url in image_paths
+        and article.hero_url not in content_image_urls
+        and not any(_is_youtube_thumbnail_url(url) for url in content_image_urls)
+    ):
+        hero = (
+            '<figure class="article-image article-hero">'
+            f'<img src="{_xml(image_paths[article.hero_url])}" {_hero_image_accessibility_attributes(article)}/>'
+            "</figure>"
+        )
+        rendered = hero + rendered
     rendered = re.sub(
         rf"(?:\s*{re.escape(SCENE_BREAK_XHTML)}\s*){{2,}}",
         SCENE_BREAK_XHTML,
