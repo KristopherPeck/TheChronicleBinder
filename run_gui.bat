@@ -8,6 +8,6 @@ if errorlevel 1 (
     exit /b 1
 )
 set "PYTHONPATH=%~dp0src"
-python -m librarian_assistant --gui
+python -m chronicle_binder --gui
 if errorlevel 1 pause
 

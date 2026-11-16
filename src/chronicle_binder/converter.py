@@ -25,7 +25,14 @@ from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
 from .catalog import PRIMARY_SERIES, ChronicleRelation, SeriesMembership, chronicle_for_url
 
 
-USER_AGENT = "TheHaruspisAssistant/0.1 (+personal EPUB converter)"
+USER_AGENT = "TheChronicleBinder/0.1 (+personal EPUB converter)"
+GAME_CONTENT_RULES_URL = "https://www.xbox.com/en-US/developers/rules"
+GAME_CONTENT_NOTICE = (
+    'Halo © Microsoft Corporation. The Chronicle Binder was created under Microsoft\'s "Game Content Usage Rules" '
+    "using assets from Halo, and it is not endorsed by or affiliated with Microsoft."
+)
+TRADEMARK_NOTICE = "Microsoft, Halo, Halo Waypoint, and Xbox are trademarks of the Microsoft group of companies."
+FAN_CONTENT_NOTICE = f"{GAME_CONTENT_NOTICE} {TRADEMARK_NOTICE}"
 ALLOWED_HOSTS = {"halowaypoint.com", "www.halowaypoint.com"}
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
@@ -557,6 +564,7 @@ figcaption { margin-top: 0.4em; color: #59666c; font: italic 0.78em/1.35 Arial, 
 .credits { font: 0.86em/1.55 Arial, sans-serif; }
 .credits dt { margin-top: 1em; color: #2f7585; font-weight: bold; text-transform: uppercase; }
 .credits dd { margin-left: 0; }
+.rights-notice { margin-top: 2em; padding-top: 1em; border-top: 1px solid #86b9c3; font-size: 0.9em; text-indent: 0; }
 nav ol { padding-left: 1.4em; }
 nav li { margin: 0.6em 0; }
 """
@@ -568,7 +576,7 @@ a { color: inherit; text-decoration: underline; }
 .kicker, h1, .imprint, .story-header .book-title,
 .note-heading, .section-heading, .epigraph, .scene-break,
 figcaption, .credits dt { color: inherit; }
-.rule, .story-header, .note-heading { border-color: currentColor; }
+.rule, .story-header, .note-heading, .rights-notice { border-color: currentColor; }
 """
 
 READING_STYLES = {"waypoint": WAYPOINT_CSS, "classic": CLASSIC_CSS}
@@ -833,6 +841,11 @@ def _build_epub(
         f'<dt>Related work</dt><dd>{_xml(relation.label)} <a href="{_xml(relation.url)}">{_xml(relation.title)}</a></dd>'
         for relation in article.relations
     )
+    rights_notice = (
+        '<p class="rights-notice">Halo © Microsoft Corporation. The Chronicle Binder was created under Microsoft\'s '
+        f'<a href="{GAME_CONTENT_RULES_URL}">"Game Content Usage Rules"</a> using assets from Halo, and it is not '
+        f"endorsed by or affiliated with Microsoft. {_xml(TRADEMARK_NOTICE)}</p>"
+    )
     cover_page_style = "width:100%;height:100vh;margin:0;padding:0;max-width:none;background:#000000;text-align:center;overflow:hidden"
     title_body = f'''<section class="title-page" epub:type="titlepage" aria-labelledby="title-page-heading">
 <div class="kicker">{_xml(article.category)}</div><h1 id="title-page-heading">{_xml(article.title)}</h1><div class="rule"></div>
@@ -846,9 +859,9 @@ def _build_epub(
 {series_credit}
 {relation_credit}
 <dt>Original publication</dt><dd><a href="{_xml(article.source_url)}">Halo Waypoint</a></dd>
-<dt>Ebook producer</dt><dd>The Haruspis Assistant</dd>
+<dt>Ebook producer</dt><dd>The Chronicle Binder</dd>
 <dt>Converted</dt><dd>{_xml(datetime.now().astimezone().strftime("%B %d, %Y"))}</dd>
-</dl><p>This personal reading edition was generated from the publicly available article. Halo and its artwork remain the property of their respective rights holders.</p></section>'''
+</dl><p>This personal reading edition was generated from the publicly available article. The story and artwork remain the property of their respective rights holders.</p>{rights_notice}</section>'''
     nav_body = f'''<nav epub:type="toc" id="toc" role="doc-toc" aria-labelledby="toc-heading"><h1 id="toc-heading">Contents</h1><ol>
 <li><a href="title.xhtml">{_xml(article.title)}</a></li><li><a href="story.xhtml#bodymatter">Story</a></li><li><a href="credits.xhtml">Edition information</a></li>
 </ol></nav>
@@ -871,10 +884,10 @@ def _build_epub(
 <meta refines="#title" property="title-type">main</meta>{author_metadata}
 <dc:language>en-US</dc:language><dc:type>Text</dc:type><dc:subject>Science fiction</dc:subject>
 <dc:publisher>Halo Studios</dc:publisher>{publication_metadata}<dc:source>{_xml(article.source_url)}</dc:source>
-<dc:description>{_xml(article.plot)}</dc:description>{relation_metadata}{collection_metadata}
-<dc:contributor id="producer">The Haruspis Assistant</dc:contributor>
+<dc:description>{_xml(article.plot)}</dc:description><dc:rights>{_xml(FAN_CONTENT_NOTICE)}</dc:rights>{relation_metadata}{collection_metadata}
+<dc:contributor id="producer">The Chronicle Binder</dc:contributor>
 <meta refines="#producer" property="role" scheme="marc:relators">bkp</meta>
-<meta refines="#producer" property="file-as">The Haruspis Assistant</meta>
+<meta refines="#producer" property="file-as">The Chronicle Binder</meta>
 <meta name="cover" content="cover-image"/>
 <meta property="dcterms:modified">{modified}</meta>
 <meta property="schema:accessMode">textual</meta>

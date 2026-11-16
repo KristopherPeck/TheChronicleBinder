@@ -7,5 +7,5 @@ if errorlevel 1 (
     exit /b 1
 )
 set "PYTHONPATH=%~dp0src"
-python -m librarian_assistant %*
+python -m chronicle_binder %*
 

@@ -7,3 +7,14 @@ build/
 dist/
 *.egg-info/
 test_output/
+.coverage
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+.env
+.env.*
+!.env.example

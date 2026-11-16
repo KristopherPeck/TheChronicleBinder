@@ -1,19 +1,28 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77.0.3"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "the-haruspis-assistant"
+name = "the-chronicle-binder"
 version = "0.1.0"
 description = "Convert Halo Waypoint Chronicles into polished EPUB books."
 readme = "README.md"
 requires-python = ">=3.10"
-license = {text = "MIT"}
-authors = [{name = "The Haruspis Assistant contributors"}]
+license = "MIT"
+license-files = ["LICENSE", "NOTICE.md"]
+authors = [{name = "Kristopher Peck and contributors"}]
+keywords = ["epub", "ebook", "halo", "waypoint", "archive"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: End Users/Desktop",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Topic :: Text Processing :: Markup",
+]
 dependencies = ["Pillow>=10.1"]
 
 [project.scripts]
-haruspis-assistant = "librarian_assistant.cli:main"
+chronicle-binder = "chronicle_binder.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

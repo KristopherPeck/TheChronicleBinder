@@ -26,7 +26,7 @@ class BatchResult:
 class ConverterWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
-        self.root.title("The Haruspis Assistant")
+        self.root.title("The Chronicle Binder")
         self.root.minsize(720, 500)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.chronicle = tk.StringVar(value=CUSTOM_SOURCE)
@@ -49,7 +49,7 @@ class ConverterWindow:
         style.configure("Hint.TLabel", foreground="#53666d")
         outer = ttk.Frame(self.root, padding=24)
         outer.pack(fill="both", expand=True)
-        ttk.Label(outer, text="The Haruspis Assistant", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
+        ttk.Label(outer, text="The Chronicle Binder", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
         ttk.Label(outer, text="Archive Halo Waypoint Chronicles as polished, offline EPUBs.", style="Hint.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 22))
 
         ttk.Label(outer, text="Chronicle").grid(row=2, column=0, sticky="w", pady=5)

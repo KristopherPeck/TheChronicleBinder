@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 from PIL import Image
 
-from librarian_assistant.catalog import (
+from chronicle_binder.catalog import (
     DEFAULT_AUTHORS,
     PRIMARY_SERIES,
     KNOWN_CHRONICLES,
@@ -17,7 +17,7 @@ from librarian_assistant.catalog import (
     SeriesMembership,
     chronicle_for_url,
 )
-from librarian_assistant.converter import (
+from chronicle_binder.converter import (
     Article,
     ConversionCancelled,
     ConversionError,
@@ -272,11 +272,13 @@ class ArticleParsingTests(unittest.TestCase):
                 self.assertIn("<dc:language>en-US</dc:language>", opf_text)
                 self.assertIn("<dc:type>Text</dc:type>", opf_text)
                 self.assertIn("<dc:subject>Science fiction</dc:subject>", opf_text)
+                self.assertIn("<dc:rights>Halo © Microsoft Corporation.", opf_text)
+                self.assertIn("not endorsed by or affiliated with Microsoft", opf_text)
                 self.assertIn('<meta id="collection-1" property="belongs-to-collection">Halo Waypoint Chronicles</meta>', opf_text)
                 self.assertIn('<meta refines="#collection-1" property="group-position">28</meta>', opf_text)
                 self.assertIn('<meta id="collection-2" property="belongs-to-collection">Test Subseries</meta>', opf_text)
                 self.assertIn("<dc:relation>https://www.halowaypoint.com/news/halo-earlier-story</dc:relation>", opf_text)
-                self.assertIn('<dc:contributor id="producer">The Haruspis Assistant</dc:contributor>', opf_text)
+                self.assertIn('<dc:contributor id="producer">The Chronicle Binder</dc:contributor>', opf_text)
                 self.assertIn('<meta refines="#producer" property="role" scheme="marc:relators">bkp</meta>', opf_text)
                 self.assertIn('<meta property="schema:accessMode">textual</meta>', opf_text)
                 self.assertIn('<meta property="schema:accessMode">visual</meta>', opf_text)
@@ -298,6 +300,8 @@ class ArticleParsingTests(unittest.TestCase):
                 self.assertIn("Test Subseries #1", credits_page)
                 self.assertIn("Sequel to", credits_page)
                 self.assertIn("Ebook producer", credits_page)
+                self.assertIn('href="https://www.xbox.com/en-US/developers/rules"', credits_page)
+                self.assertIn("not endorsed by or affiliated with Microsoft", credits_page)
                 self.assertIn('<meta name="cover" content="cover-image"/>', opf_text)
                 self.assertIn('id="cover-image" href="Images/cover.jpg" media-type="image/jpeg" properties="cover-image"', opf_text)
                 self.assertIn('<reference type="cover" title="Cover" href="Text/cover.xhtml"/>', opf_text)
@@ -389,9 +393,9 @@ class ArticleParsingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             expected = Path(directory) / "Archive Title.epub"
             with (
-                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
-                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
-                patch("librarian_assistant.converter._build_epub") as build_epub,
+                patch("chronicle_binder.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("chronicle_binder.converter._download_images", return_value=([], {}, [])),
+                patch("chronicle_binder.converter._build_epub") as build_epub,
             ):
                 result = convert_url(
                     "https://www.halowaypoint.com/news/test",
@@ -404,9 +408,9 @@ class ArticleParsingTests(unittest.TestCase):
     def test_known_url_applies_catalog_authors_and_publication_date(self):
         with tempfile.TemporaryDirectory() as directory:
             with (
-                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
-                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
-                patch("librarian_assistant.converter._build_epub") as build_epub,
+                patch("chronicle_binder.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("chronicle_binder.converter._download_images", return_value=([], {}, [])),
+                patch("chronicle_binder.converter._build_epub") as build_epub,
             ):
                 result = convert_url(
                     "https://www.halowaypoint.com/en/news/halo-veritas-aeterna",
@@ -421,9 +425,9 @@ class ArticleParsingTests(unittest.TestCase):
     def test_manual_author_override_replaces_all_catalog_authors(self):
         with tempfile.TemporaryDirectory() as directory:
             with (
-                patch("librarian_assistant.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
-                patch("librarian_assistant.converter._download_images", return_value=([], {}, [])),
-                patch("librarian_assistant.converter._build_epub") as build_epub,
+                patch("chronicle_binder.converter._download", return_value=(SAMPLE_PAGE, "text/html")),
+                patch("chronicle_binder.converter._download_images", return_value=([], {}, [])),
+                patch("chronicle_binder.converter._build_epub") as build_epub,
             ):
                 convert_url(
                     "https://www.halowaypoint.com/news/halo-veritas-aeterna",
@@ -446,7 +450,7 @@ class ArticleParsingTests(unittest.TestCase):
         content.children.append(image)
         article = Article("Halo: Test", "Author", "Waypoint Chronicles", "https://www.halowaypoint.com/news/test", None, "", content)
         messages: list[str] = []
-        with patch("librarian_assistant.converter._download", side_effect=ConversionError("not found")):
+        with patch("chronicle_binder.converter._download", side_effect=ConversionError("not found")):
             assets, replacements, warnings = _download_images(article, messages.append)
         self.assertEqual(assets, [])
         self.assertEqual(replacements, {})
