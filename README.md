@@ -8,6 +8,15 @@ It uses Python and Pillow for portable raster cover generation. No browser autom
   <img src="screenshots/gui_example.png" alt="The Chronicle Binder desktop interface" width="720"/>
 </p>
 
+
+## AI disclosure
+
+This project was developed with assistance from OpenAI Codex, including help with code, documentation, and debugging. The application does not use generative AI at runtime: EPUBs are assembled deterministically from the selected Waypoint article, its artwork, and the converter's built-in layouts and metadata rules.
+
+## Why this exists
+
+Earlier Waypoint Chronicles often included downloadable PDFs, while newer releases have not always provided an equivalent offline file. This project provides a consistent way to build a personal, local reading archive from the public articles.
+
 ## Important fan-project notice
 
 **Halo © Microsoft Corporation. The Chronicle Binder was created under Microsoft's "Game Content Usage Rules" using assets from Halo, and it is not endorsed by or affiliated with Microsoft.**
@@ -154,14 +163,6 @@ python -m unittest discover -s tests -v
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. In particular, do not commit generated EPUBs, downloaded Waypoint pages, proprietary fonts, or other third-party assets.
-
-## AI disclosure
-
-This project was developed with assistance from OpenAI Codex, including help with code, documentation, and debugging. The application does not use generative AI at runtime: EPUBs are assembled deterministically from the selected Waypoint article, its artwork, and the converter's built-in layouts and metadata rules.
-
-## Why this exists
-
-Earlier Waypoint Chronicles often included downloadable PDFs, while newer releases have not always provided an equivalent offline file. This project provides a consistent way to build a personal, local reading archive from the public articles.
 
 ## License
 
