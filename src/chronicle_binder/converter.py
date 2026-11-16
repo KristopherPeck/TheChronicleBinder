@@ -53,6 +53,14 @@ ARTWORK_HOSTS = frozenset(
     }
 )
 YOUTUBE_THUMBNAIL_HOSTS = frozenset({"i.ytimg.com", "img.youtube.com"})
+YOUTUBE_LINK_HOSTS = frozenset({"youtube.com", "www.youtube.com", "m.youtube.com", "youtu.be"})
+FORMAT_PROMO_PHRASES = (
+    "free pdf",
+    "audiobook",
+    "audio narration",
+    "watch on youtube",
+    "listen on youtube",
+)
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
 MAX_IMAGE_COUNT = 100
@@ -431,14 +439,18 @@ def _guess_image_type(url: str, content_type: str, data: bytes) -> tuple[str, st
     )
 
 
-def _content_image_urls(article: Article) -> list[str]:
+def _content_image_urls(article: Article, children: Iterable[Node | str] | None = None) -> list[str]:
     """Return absolute image URLs in article-body order."""
 
     urls: list[str] = []
-    for node in article.content.descendants("img"):
-        source, _alt = _image_source(node)
-        if source:
-            urls.append(urljoin(article.source_url, source))
+    for child in article.content.children if children is None else children:
+        if not isinstance(child, Node):
+            continue
+        image_nodes = ([child] if child.tag == "img" else []) + list(child.descendants("img"))
+        for node in image_nodes:
+            source, _alt = _image_source(node)
+            if source:
+                urls.append(urljoin(article.source_url, source))
     return list(dict.fromkeys(urls))
 
 
@@ -453,6 +465,56 @@ def _is_youtube_thumbnail_url(url: str) -> bool:
 
     parsed = urlparse(url)
     return parsed.scheme.lower() in {"http", "https"} and (parsed.hostname or "").lower() in YOUTUBE_THUMBNAIL_HOSTS
+
+
+def _is_scene_break_node(node: Node | str) -> bool:
+    if not isinstance(node, Node):
+        return False
+    plain = node.text().strip()
+    if node.tag == "hr" or plain in {"*", "* * *", "✦", "•"}:
+        return True
+    return node.tag == "div" and not plain and next(node.descendants("img"), None) is None
+
+
+def _is_format_promotion(node: Node | str, article: Article) -> bool:
+    """Recognize a short top-level block advertising external story formats."""
+
+    if not isinstance(node, Node) or node.tag not in {"p", "div", "figure", "a", "img"}:
+        return False
+    text = _normalized_text(node.text()).strip().casefold()
+    if len(text) > 1000:
+        return False
+    if any(phrase in text for phrase in FORMAT_PROMO_PHRASES):
+        return True
+    image_urls: list[str] = []
+    image_nodes = ([node] if node.tag == "img" else []) + list(node.descendants("img"))
+    for image in image_nodes:
+        source, _alt = _image_source(image)
+        if source:
+            image_urls.append(urljoin(article.source_url, source))
+    if any(_is_youtube_thumbnail_url(url) for url in image_urls) and len(text) < 250:
+        return True
+    for link in ([node] if node.tag == "a" else []) + list(node.descendants("a")):
+        href = urljoin(article.source_url, link.attrs.get("href", ""))
+        parsed = urlparse(href)
+        if parsed.path.casefold().endswith(".pdf") or (parsed.hostname or "").lower() in YOUTUBE_LINK_HOSTS:
+            return True
+    return False
+
+
+def _story_children(article: Article, remove_format_links: bool) -> list[Node | str]:
+    children = list(article.content.children)
+    if not remove_format_links:
+        return children
+    removed = {index for index, child in enumerate(children) if _is_format_promotion(child, article)}
+    if not removed:
+        return children
+    for index in tuple(removed):
+        if index > 0 and _is_scene_break_node(children[index - 1]):
+            removed.add(index - 1)
+        if index + 1 < len(children) and _is_scene_break_node(children[index + 1]):
+            removed.add(index + 1)
+    return [child for index, child in enumerate(children) if index not in removed]
 
 
 def _download_images(
@@ -637,9 +699,15 @@ def _render_node(node: Node | str, article: Article, image_paths: dict[str, str]
     return f"<{tag}{css_class}>{body}</{tag}>"
 
 
-def _render_story(article: Article, image_paths: dict[str, str]) -> str:
-    content_image_urls = _content_image_urls(article)
-    rendered = "".join(_render_node(child, article, image_paths) for child in article.content.children)
+def _render_story(
+    article: Article,
+    image_paths: dict[str, str],
+    *,
+    remove_format_links: bool = False,
+) -> str:
+    children = _story_children(article, remove_format_links)
+    content_image_urls = _content_image_urls(article, children)
+    rendered = "".join(_render_node(child, article, image_paths) for child in children)
     if (
         article.hero_url
         and article.hero_url in image_paths
@@ -955,6 +1023,7 @@ def _build_epub(
     *,
     overwrite: bool = False,
     reading_style: str = "waypoint",
+    remove_format_links: bool = False,
 ) -> None:
     identifier = f"urn:uuid:{uuid.uuid5(uuid.NAMESPACE_URL, article.source_url)}"
     modified = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -992,7 +1061,7 @@ def _build_epub(
 <div class="byline">by {_xml(author_line)}</div>
 <div class="imprint">A Halo Waypoint Chronicle<br/>Personal EPUB edition</div></section>'''
     story_body = f'''<header class="story-header"><h1 id="story-heading" class="book-title">{_xml(article.title)}</h1></header>
-<main id="bodymatter" epub:type="bodymatter" aria-labelledby="story-heading">{_render_story(article, image_paths)}</main>'''
+<main id="bodymatter" epub:type="bodymatter" aria-labelledby="story-heading">{_render_story(article, image_paths, remove_format_links=remove_format_links)}</main>'''
     credits_body = f'''<section class="credits" epub:type="colophon" role="doc-colophon" aria-labelledby="colophon-heading"><h1 id="colophon-heading" class="section-heading">Edition information</h1><dl>
 <dt>Story</dt><dd>{_xml(article.title)}</dd><dt>{"Author" if len(article.authors) == 1 else "Authors"}</dt><dd>{_xml(author_line)}</dd>
 {publication_credit}
@@ -1118,6 +1187,7 @@ def convert_url(
     title: str | None = None,
     author: str | None = None,
     reading_style: str = "waypoint",
+    remove_format_links: bool = False,
     overwrite: bool = False,
     progress: Callable[[str], None] | None = None,
     cancelled: Callable[[], bool] | None = None,
@@ -1169,7 +1239,15 @@ def convert_url(
     if cancelled and cancelled():
         raise ConversionCancelled("Conversion cancelled.")
     notify("Packaging EPUB...")
-    _build_epub(article, assets, image_paths, destination, overwrite=overwrite, reading_style=reading_style)
+    _build_epub(
+        article,
+        assets,
+        image_paths,
+        destination,
+        overwrite=overwrite,
+        reading_style=reading_style,
+        remove_format_links=remove_format_links,
+    )
     notify("Done")
     return ConversionResult(destination.resolve(), article.title, article.author_line, len(assets), tuple(warnings))
 

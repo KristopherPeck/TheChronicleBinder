@@ -27,7 +27,7 @@ class ConverterWindow:
     def __init__(self, root: tk.Tk) -> None:
         self.root = root
         self.root.title("The Chronicle Binder")
-        self.root.minsize(720, 500)
+        self.root.minsize(720, 540)
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.chronicle = tk.StringVar(value=CUSTOM_SOURCE)
         self.url = tk.StringVar()
@@ -35,6 +35,7 @@ class ConverterWindow:
         self.title = tk.StringVar()
         self.author = tk.StringVar()
         self.reading_style = tk.StringVar(value="Official-inspired color")
+        self.remove_format_links = tk.BooleanVar(value=True)
         self.replace_existing = tk.BooleanVar(value=False)
         self.status = tk.StringVar(value="Ready")
         self.cancel_event = threading.Event()
@@ -84,23 +85,30 @@ class ConverterWindow:
         )
         style_picker.grid(row=7, column=1, columnspan=2, sticky="ew", pady=5)
 
+        remove_links = ttk.Checkbutton(
+            outer,
+            text="Remove YouTube, PDF, and audiobook promotions",
+            variable=self.remove_format_links,
+        )
+        remove_links.grid(row=8, column=1, columnspan=2, sticky="w", pady=(5, 2))
+
         replace = ttk.Checkbutton(
             outer,
             text="Replace existing EPUBs with the same detected title",
             variable=self.replace_existing,
         )
-        replace.grid(row=8, column=1, columnspan=2, sticky="w", pady=(5, 2))
+        replace.grid(row=9, column=1, columnspan=2, sticky="w", pady=(5, 2))
         ttk.Label(
             outer,
             text="Files use the detected title automatically. Overrides apply only to a single export.",
             style="Hint.TLabel",
-        ).grid(row=9, column=1, columnspan=2, sticky="w", pady=(0, 18))
+        ).grid(row=10, column=1, columnspan=2, sticky="w", pady=(0, 18))
 
         self.progress = ttk.Progressbar(outer, mode="indeterminate")
-        self.progress.grid(row=10, column=0, columnspan=3, sticky="ew", pady=(5, 7))
-        ttk.Label(outer, textvariable=self.status, style="Hint.TLabel").grid(row=11, column=0, columnspan=2, sticky="w")
+        self.progress.grid(row=11, column=0, columnspan=3, sticky="ew", pady=(5, 7))
+        ttk.Label(outer, textvariable=self.status, style="Hint.TLabel").grid(row=12, column=0, columnspan=2, sticky="w")
         actions = ttk.Frame(outer)
-        actions.grid(row=11, column=2, sticky="e")
+        actions.grid(row=12, column=2, sticky="e")
         self.cancel_button = ttk.Button(actions, text="Cancel", command=self._cancel, state="disabled")
         self.cancel_button.pack(side="left", padx=(0, 8))
         self.all_button = ttk.Button(actions, text=f"Download All ({len(KNOWN_CHRONICLES)})", command=self._start_all)
@@ -108,7 +116,7 @@ class ConverterWindow:
         self.convert_button = ttk.Button(actions, text="Create EPUB", command=self._start)
         self.convert_button.pack(side="left")
         outer.columnconfigure(1, weight=1)
-        outer.rowconfigure(12, weight=1)
+        outer.rowconfigure(13, weight=1)
         self.url_entry.focus_set()
 
     def _source_changed(self, _event: object = None) -> None:
@@ -170,6 +178,7 @@ class ConverterWindow:
                 self.title.get(),
                 self.author.get(),
                 self._reading_style(),
+                self.remove_format_links.get(),
                 self.replace_existing.get(),
             ),
             daemon=True,
@@ -190,7 +199,13 @@ class ConverterWindow:
         self._begin(f"Starting archive of {len(KNOWN_CHRONICLES)} Chronicles...")
         worker = threading.Thread(
             target=self._batch_worker,
-            args=(KNOWN_CHRONICLES, folder, self._reading_style(), self.replace_existing.get()),
+            args=(
+                KNOWN_CHRONICLES,
+                folder,
+                self._reading_style(),
+                self.remove_format_links.get(),
+                self.replace_existing.get(),
+            ),
             daemon=True,
         )
         worker.start()
@@ -202,6 +217,7 @@ class ConverterWindow:
         title: str,
         author: str,
         reading_style: str,
+        remove_format_links: bool,
         overwrite: bool,
     ) -> None:
         try:
@@ -211,6 +227,7 @@ class ConverterWindow:
                 title=title,
                 author=author,
                 reading_style=reading_style,
+                remove_format_links=remove_format_links,
                 overwrite=overwrite,
                 progress=lambda message: self.events.put(("status", message)),
                 cancelled=self.cancel_event.is_set,
@@ -228,6 +245,7 @@ class ConverterWindow:
         chronicles: tuple[Chronicle, ...],
         folder: Path,
         reading_style: str,
+        remove_format_links: bool,
         overwrite: bool,
     ) -> None:
         completed: list[ConversionResult] = []
@@ -243,6 +261,7 @@ class ConverterWindow:
                         chronicle.url,
                         output_directory=folder,
                         reading_style=reading_style,
+                        remove_format_links=remove_format_links,
                         overwrite=overwrite,
                         progress=lambda message, position=index: self.events.put(
                             ("status", f"[{position}/{total}] {chronicle.title}: {message}")

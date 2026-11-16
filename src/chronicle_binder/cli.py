@@ -21,6 +21,11 @@ def _parser() -> argparse.ArgumentParser:
         default="waypoint",
         help="Reading style: official-inspired color or classic black and white",
     )
+    parser.add_argument(
+        "--remove-format-links",
+        action="store_true",
+        help="Remove YouTube, free PDF, and audiobook promotional blocks",
+    )
     parser.add_argument("--force", action="store_true", help="Replace the destination if it already exists")
     parser.add_argument("--gui", action="store_true", help="Open the desktop interface")
     return parser
@@ -40,6 +45,7 @@ def main(argv: list[str] | None = None) -> int:
             title=args.title,
             author=args.author,
             reading_style=args.style,
+            remove_format_links=args.remove_format_links,
             overwrite=args.force,
             progress=lambda message: print(message, file=sys.stderr),
         )

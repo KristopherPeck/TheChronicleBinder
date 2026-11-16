@@ -230,6 +230,25 @@ class ArticleParsingTests(unittest.TestCase):
             "Halo: Winter Contention is set in December 2551, before the fall of Reach.",
         )
 
+    def test_format_promotion_option_creates_a_clean_hero_to_note_layout(self):
+        article = parse_article(
+            PROMO_THEN_NOTE_SAMPLE_PAGE,
+            "https://www.halowaypoint.com/news/halo-winter-contention",
+        )
+        article.hero_url = "https://wpassets.halowaypoint.com/wp-content/2026/hero.jpg"
+        article.hero_alt = "Winter Contention artwork."
+        image_paths = {article.hero_url: "../Images/hero.jpg"}
+        preserved = _render_story(article, image_paths)
+        cleaned = _render_story(article, image_paths, remove_format_links=True)
+        self.assertIn("free PDF", preserved)
+        self.assertIn("YouTube", preserved)
+        self.assertNotIn("free PDF", cleaned)
+        self.assertNotIn("YouTube", cleaned)
+        self.assertTrue(cleaned.startswith('<figure class="article-image article-hero">'))
+        self.assertLess(cleaned.index("article-hero"), cleaned.index("HISTORIAN'S NOTE"))
+        self.assertIn("Halo: Winter Contention is set in December 2551", cleaned)
+        self.assertIn("Story text.", cleaned)
+
     def test_cover_title_lines_stay_within_target_width(self):
         lines = _cover_title_lines("Halo: An Exceptionallylongunbrokenword Chronicle")
         self.assertTrue(lines)
@@ -426,9 +445,11 @@ class ArticleParsingTests(unittest.TestCase):
                     "https://www.halowaypoint.com/news/test",
                     output_directory=directory,
                     title="Archive Title",
+                    remove_format_links=True,
                 )
             self.assertEqual(result.output_path, expected.resolve())
             self.assertEqual(build_epub.call_args.args[3], expected)
+            self.assertTrue(build_epub.call_args.kwargs["remove_format_links"])
 
     def test_known_url_applies_catalog_authors_and_publication_date(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -502,12 +523,15 @@ class ArticleParsingTests(unittest.TestCase):
         with patch("chronicle_binder.converter._download", return_value=(hero_data, "image/jpeg")) as download:
             assets, replacements, warnings = _download_images(article, lambda _message: None)
         rendered = _render_story(article, replacements)
+        cleaned = _render_story(article, replacements, remove_format_links=True)
         self.assertEqual(download.call_count, 1)
         self.assertEqual(len(assets), 1)
         self.assertEqual(warnings, [])
         self.assertIn(replacements[hero_url], rendered)
         self.assertIn('alt="A Spartan standing beneath city lights."', rendered)
         self.assertNotIn("Video thumbnail", rendered)
+        self.assertTrue(cleaned.startswith('<figure class="article-image article-hero">'))
+        self.assertEqual(cleaned.count(replacements[hero_url]), 1)
 
     def test_story_prepends_hero_when_no_video_thumbnail_or_matching_body_image_exists(self):
         hero_url = "https://wpassets.halowaypoint.com/wp-content/2026/hero.jpg"

@@ -32,6 +32,7 @@ Generated EPUBs are intended for personal archival and reading. Do not assume th
 - Desktop interface with a maintained catalog of known Waypoint Chronicles and a custom URL option
 - Single-book conversion or sequential **Download All** archiving with a two-second cooldown
 - Automatic filenames with optional title and author overrides
+- Checked-by-default removal of YouTube, free PDF, and audiobook promotion blocks
 - Artwork-based 1700×2400 raster covers designed for Calibre, Kavita, and other library applications
 - Waypoint-inspired color and classic black-and-white reading styles
 - Reflowable, column-safe typography with reader-controlled margins, fonts, colors, and spacing
@@ -61,7 +62,7 @@ The included batch launchers target Windows. The Python package and command-line
 3. Double-click `run_gui.bat`.
 4. Choose a known Chronicle or select **Custom URL...** and enter a public Halo Waypoint news URL.
 5. Choose an existing archive folder.
-6. Optionally override the detected title or author and choose a reading style.
+6. Optionally override the detected title or author, choose a reading style, and decide whether to remove external-format promotions.
 7. Select **Create EPUB**.
 
 Files use the detected title automatically. Existing EPUBs are protected by default; enable **Replace existing EPUBs** only when intentionally refreshing an archive.
@@ -90,6 +91,12 @@ Use the classic reading style:
 
 ```powershell
 .\run_cli.bat URL --style classic
+```
+
+Remove YouTube, free PDF, and audiobook promotional blocks:
+
+```powershell
+.\run_cli.bat URL --remove-format-links
 ```
 
 Add `--force` only when intentionally replacing an existing destination:

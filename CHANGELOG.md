@@ -14,4 +14,5 @@ All notable changes to The Chronicle Binder are documented here.
 - Cancellation, overwrite protection, bounded downloads, and recoverable artwork failures.
 - HTTPS-only host and redirect validation, raster image allowlisting, aggregate artwork limits, and hardened Pillow processing.
 - Approved Waypoint hero artwork within stories, replacing blocked YouTube thumbnails or opening articles without one.
+- Checked-by-default UI control and CLI flag for removing external-format promotion blocks and their surrounding separators.
 - Public-release documentation, fan-project notices, contributor guidance, and a private GitHub security-reporting policy.
