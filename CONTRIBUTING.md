@@ -4,7 +4,7 @@ Contributions that improve Chronicle extraction, EPUB interoperability, accessib
 
 ## Development setup
 
-Use Python 3.10 or newer from the repository root:
+Use Python 3.11 or newer from the repository root:
 
 ```powershell
 python -m pip install -e .
@@ -25,5 +25,7 @@ Keep changes focused and include regression coverage for parsing, metadata, cove
 ## Pull requests
 
 Describe the user-visible effect, identify the Chronicle URLs affected by parser changes, and note which readers were checked for EPUB changes. Do not include generated books in a pull request; screenshots or narrowly scoped markup excerpts are preferred when needed.
+
+Do not disclose suspected vulnerabilities in a public issue or pull request. Follow [SECURITY.md](SECURITY.md) and submit them through GitHub's private vulnerability reporting workflow.
 
 By contributing, you agree that your original contribution is provided under the project's MIT License. You must have the right to submit everything included in your contribution.

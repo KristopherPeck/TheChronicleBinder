@@ -7,7 +7,7 @@ name = "the-chronicle-binder"
 version = "0.1.0"
 description = "Convert Halo Waypoint Chronicles into polished EPUB books."
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE.md"]
 authors = [{name = "Kristopher Peck and contributors"}]
@@ -16,10 +16,10 @@ classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: End Users/Desktop",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
     "Topic :: Text Processing :: Markup",
 ]
-dependencies = ["Pillow>=10.1"]
+dependencies = ["Pillow>=13.0.0,<14"]
 
 [project.scripts]
 chronicle-binder = "chronicle_binder.cli:main"

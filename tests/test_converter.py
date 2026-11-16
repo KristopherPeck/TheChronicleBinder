@@ -26,9 +26,12 @@ from chronicle_binder.converter import (
     _build_epub,
     _cover_title_lines,
     _download_images,
+    _guess_image_type,
     _render_cover_jpeg,
     _render_story,
+    _validate_download_url,
     _validate_source_url,
+    ARTWORK_HOSTS,
     convert_url,
     parse_article,
 )
@@ -147,6 +150,28 @@ class ArticleParsingTests(unittest.TestCase):
             _validate_source_url("https://www.halowaypoint.com/en-us/news/halo-veritas-aeterna"),
             "https://www.halowaypoint.com/en-us/news/halo-veritas-aeterna",
         )
+
+    def test_source_urls_require_https_without_credentials_or_custom_ports(self):
+        for url in (
+            "http://www.halowaypoint.com/news/halo-elegy",
+            "https://user@www.halowaypoint.com/news/halo-elegy",
+            "https://www.halowaypoint.com:444/news/halo-elegy",
+            "https://example.com/news/halo-elegy",
+        ):
+            with self.subTest(url=url), self.assertRaises(ConversionError):
+                _validate_source_url(url)
+
+    def test_artwork_urls_are_limited_to_approved_https_hosts(self):
+        approved = "https://wpassets.halowaypoint.com/wp-content/2026/cover.jpg"
+        self.assertEqual(_validate_download_url(approved, ARTWORK_HOSTS, "artwork"), approved)
+        for url in (
+            "http://wpassets.halowaypoint.com/cover.jpg",
+            "file:///C:/Users/example/cover.jpg",
+            "https://127.0.0.1/cover.jpg",
+            "https://example.com/cover.jpg",
+        ):
+            with self.subTest(url=url), self.assertRaises(ConversionError):
+                _validate_download_url(url, ARTWORK_HOSTS, "artwork")
 
     def test_rejects_news_indexes_and_unrelated_localized_paths(self):
         for url in (
@@ -456,6 +481,52 @@ class ArticleParsingTests(unittest.TestCase):
         self.assertEqual(replacements, {})
         self.assertEqual(len(warnings), 1)
         self.assertTrue(any(message.startswith("Warning:") for message in messages))
+
+    def test_image_type_requires_an_approved_raster_signature(self):
+        jpeg = _sample_image_bytes()
+        self.assertEqual(
+            _guess_image_type("https://wpassets.halowaypoint.com/cover.jpg", "image/jpeg", jpeg),
+            (".jpg", "image/jpeg"),
+        )
+        for data, content_type in (
+            (b'<svg xmlns="http://www.w3.org/2000/svg"><script/></svg>', "image/svg+xml"),
+            (b"<?xml version='1.0'?><svg/>", "image/svg+xml"),
+            (b"not really a jpeg", "image/jpeg"),
+        ):
+            with self.subTest(content_type=content_type), self.assertRaises(ConversionError):
+                _guess_image_type("https://wpassets.halowaypoint.com/cover.jpg", content_type, data)
+
+    def test_artwork_count_limit_skips_excess_images(self):
+        content = Node("div")
+        for index in range(3):
+            content.children.append(
+                Node("img", {"src": f"https://wpassets.halowaypoint.com/image-{index}.jpg"}, parent=content)
+            )
+        article = Article("Halo: Test", "Author", "Waypoint Chronicles", "https://www.halowaypoint.com/news/test", None, "", content)
+        messages: list[str] = []
+        with (
+            patch("chronicle_binder.converter.MAX_IMAGE_COUNT", 2),
+            patch("chronicle_binder.converter._download", return_value=(_sample_image_bytes(), "image/jpeg")),
+        ):
+            assets, _replacements, warnings = _download_images(article, messages.append)
+        self.assertEqual(len(assets), 2)
+        self.assertTrue(any("only the first 2" in warning for warning in warnings))
+
+    def test_artwork_total_size_limit_stops_additional_downloads(self):
+        content = Node("div")
+        for index in range(2):
+            content.children.append(
+                Node("img", {"src": f"https://wpassets.halowaypoint.com/image-{index}.jpg"}, parent=content)
+            )
+        article = Article("Halo: Test", "Author", "Waypoint Chronicles", "https://www.halowaypoint.com/news/test", None, "", content)
+        image_data = _sample_image_bytes()
+        with (
+            patch("chronicle_binder.converter.MAX_TOTAL_IMAGE_BYTES", len(image_data) + 1),
+            patch("chronicle_binder.converter._download", return_value=(image_data, "image/jpeg")),
+        ):
+            assets, _replacements, warnings = _download_images(article, lambda _message: None)
+        self.assertEqual(len(assets), 1)
+        self.assertTrue(any("total limit" in warning for warning in warnings))
 
     def test_download_can_be_cancelled_between_images(self):
         content = Node("div")

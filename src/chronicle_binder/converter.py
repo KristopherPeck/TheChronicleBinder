@@ -5,11 +5,12 @@ from __future__ import annotations
 import hashlib
 import html
 import io
-import mimetypes
 import os
 import re
+import sys
 import tempfile
 import uuid
+import warnings
 import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -18,11 +19,21 @@ from pathlib import Path
 from typing import Callable, Iterable
 from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError
+from PIL import Image, ImageDraw, ImageFont, ImageOps, UnidentifiedImageError, __version__ as PILLOW_VERSION
 
 from .catalog import PRIMARY_SERIES, ChronicleRelation, SeriesMembership, chronicle_for_url
+
+
+if sys.version_info < (3, 11):
+    raise RuntimeError("The Chronicle Binder requires Python 3.11 or newer.")
+try:
+    _pillow_major_version = int(PILLOW_VERSION.split(".", 1)[0])
+except (TypeError, ValueError) as exc:
+    raise RuntimeError("The installed Pillow version could not be verified.") from exc
+if _pillow_major_version != 13:
+    raise RuntimeError("The Chronicle Binder requires a Pillow 13.x release.")
 
 
 USER_AGENT = "TheChronicleBinder/0.1 (+personal EPUB converter)"
@@ -33,9 +44,19 @@ GAME_CONTENT_NOTICE = (
 )
 TRADEMARK_NOTICE = "Microsoft, Halo, Halo Waypoint, and Xbox are trademarks of the Microsoft group of companies."
 FAN_CONTENT_NOTICE = f"{GAME_CONTENT_NOTICE} {TRADEMARK_NOTICE}"
-ALLOWED_HOSTS = {"halowaypoint.com", "www.halowaypoint.com"}
+SOURCE_HOSTS = frozenset({"halowaypoint.com", "www.halowaypoint.com"})
+ARTWORK_HOSTS = frozenset(
+    {
+        *SOURCE_HOSTS,
+        "wpassets.halowaypoint.com",
+        "content.halocdn.com",
+    }
+)
 MAX_PAGE_BYTES = 10 * 1024 * 1024
 MAX_IMAGE_BYTES = 40 * 1024 * 1024
+MAX_IMAGE_COUNT = 100
+MAX_TOTAL_IMAGE_BYTES = 250 * 1024 * 1024
+MAX_COVER_SOURCE_PIXELS = 50_000_000
 PRECOMPOSED_COVER_SLUGS = {"halo-winter-contention"}
 VOID_TAGS = {"area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"}
 CONTENT_TAGS = {"p", "div", "h1", "h2", "h3", "h4", "h5", "h6", "blockquote", "ul", "ol", "li", "figure", "figcaption", "img", "hr", "br", "strong", "b", "em", "i", "a", "span", "sup", "sub"}
@@ -257,10 +278,8 @@ def _opening_synopsis(content: Node) -> str:
 
 
 def _validate_source_url(url: str) -> str:
-    parsed = urlparse(url.strip())
-    host = (parsed.hostname or "").lower()
-    if parsed.scheme not in {"http", "https"} or host not in ALLOWED_HOSTS:
-        raise ConversionError("Please enter a public halowaypoint.com article URL.")
+    normalized = _validate_download_url(url, SOURCE_HOSTS, "Halo Waypoint article")
+    parsed = urlparse(normalized)
     news_path = re.fullmatch(
         r"/(?:[a-z]{2}(?:-[a-z]{2})?/)?news/[^/]+/?",
         parsed.path,
@@ -268,19 +287,67 @@ def _validate_source_url(url: str) -> str:
     )
     if news_path is None:
         raise ConversionError("The URL must point to a Halo Waypoint news article.")
-    return url.strip()
+    return normalized
+
+
+def _validate_download_url(url: str, allowed_hosts: frozenset[str], resource_name: str) -> str:
+    """Require HTTPS downloads from an exact set of trusted hosts."""
+
+    normalized = url.strip()
+    parsed = urlparse(normalized)
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ConversionError(f"Invalid {resource_name} URL: {url}") from exc
+    host = (parsed.hostname or "").lower()
+    if (
+        parsed.scheme.lower() != "https"
+        or host not in allowed_hosts
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in {None, 443}
+    ):
+        hosts = ", ".join(sorted(allowed_hosts))
+        raise ConversionError(f"The {resource_name} URL must use HTTPS on an approved host ({hosts}): {url}")
+    return normalized
+
+
+class _SafeRedirectHandler(HTTPRedirectHandler):
+    """Reject redirects that leave the approved HTTPS origin set."""
+
+    def __init__(self, allowed_hosts: frozenset[str], resource_name: str) -> None:
+        super().__init__()
+        self.allowed_hosts = allowed_hosts
+        self.resource_name = resource_name
+
+    def redirect_request(
+        self,
+        req: Request,
+        fp: object,
+        code: int,
+        msg: str,
+        headers: object,
+        newurl: str,
+    ) -> Request | None:
+        safe_url = _validate_download_url(newurl, self.allowed_hosts, self.resource_name)
+        return super().redirect_request(req, fp, code, msg, headers, safe_url)
 
 
 def _download(
     url: str,
     *,
+    allowed_hosts: frozenset[str],
+    resource_name: str,
     timeout: int = 45,
     max_bytes: int,
     cancelled: Callable[[], bool] | None = None,
 ) -> tuple[bytes, str]:
-    request = Request(url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.8"})
+    safe_url = _validate_download_url(url, allowed_hosts, resource_name)
+    request = Request(safe_url, headers={"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml,image/*;q=0.9,*/*;q=0.8"})
+    opener = build_opener(_SafeRedirectHandler(allowed_hosts, resource_name))
     try:
-        with urlopen(request, timeout=timeout) as response:
+        with opener.open(request, timeout=timeout) as response:
+            _validate_download_url(response.geturl(), allowed_hosts, resource_name)
             declared_size = response.headers.get("Content-Length")
             if declared_size and declared_size.isdigit() and int(declared_size) > max_bytes:
                 raise ConversionError(f"Download is larger than the allowed {max_bytes // (1024 * 1024)} MB: {url}")
@@ -343,26 +410,24 @@ def _safe_filename(title: str) -> str:
 
 
 def _guess_image_type(url: str, content_type: str, data: bytes) -> tuple[str, str]:
+    """Identify a small raster allowlist by signature, never by server claims."""
+
     signatures = (
         (b"\x89PNG\r\n\x1a\n", ".png", "image/png"),
         (b"\xff\xd8\xff", ".jpg", "image/jpeg"),
         (b"GIF87a", ".gif", "image/gif"),
         (b"GIF89a", ".gif", "image/gif"),
         (b"RIFF", ".webp", "image/webp"),
-        (b"<svg", ".svg", "image/svg+xml"),
-        (b"<?xml", ".svg", "image/svg+xml"),
     )
     for signature, extension, media_type in signatures:
         if data.startswith(signature):
             if extension != ".webp" or data[8:12] == b"WEBP":
                 return extension, media_type
-    normalized = content_type.split(";", 1)[0].lower()
-    extension = mimetypes.guess_extension(normalized) or Path(urlparse(url).path).suffix.lower()
-    if extension == ".jpe":
-        extension = ".jpg"
-    if normalized.startswith("image/") and extension:
-        return extension, normalized
-    raise ConversionError(f"Downloaded artwork is not a recognized image: {url}")
+    claimed_type = content_type.split(";", 1)[0].lower() or "unknown"
+    raise ConversionError(
+        f"Downloaded artwork is not an approved JPEG, PNG, GIF, or WebP image "
+        f"(server reported {claimed_type}): {url}"
+    )
 
 
 def _collect_image_urls(article: Article) -> list[str]:
@@ -384,12 +449,25 @@ def _download_images(
     assets: list[ImageAsset] = []
     replacements: dict[str, str] = {}
     warnings: list[str] = []
-    for index, url in enumerate(_collect_image_urls(article), start=1):
+    image_urls = _collect_image_urls(article)
+    if len(image_urls) > MAX_IMAGE_COUNT:
+        warning = f"Warning: article references {len(image_urls)} images; only the first {MAX_IMAGE_COUNT} will be downloaded."
+        warnings.append(warning)
+        progress(warning)
+        image_urls = image_urls[:MAX_IMAGE_COUNT]
+    total_image_bytes = 0
+    for index, url in enumerate(image_urls, start=1):
         if cancelled and cancelled():
             raise ConversionCancelled("Conversion cancelled.")
         progress(f"Downloading artwork {index}...")
         try:
-            data, content_type = _download(url, max_bytes=MAX_IMAGE_BYTES, cancelled=cancelled)
+            data, content_type = _download(
+                url,
+                allowed_hosts=ARTWORK_HOSTS,
+                resource_name="artwork",
+                max_bytes=MAX_IMAGE_BYTES,
+                cancelled=cancelled,
+            )
             extension, media_type = _guess_image_type(url, content_type, data)
         except ConversionCancelled:
             raise
@@ -398,6 +476,12 @@ def _download_images(
             warnings.append(warning)
             progress(warning)
             continue
+        if total_image_bytes + len(data) > MAX_TOTAL_IMAGE_BYTES:
+            warning = f"Warning: stopped downloading artwork at the {MAX_TOTAL_IMAGE_BYTES // (1024 * 1024)} MB total limit."
+            warnings.append(warning)
+            progress(warning)
+            break
+        total_image_bytes += len(data)
         digest = hashlib.sha256(data).hexdigest()[:10]
         filename = f"image-{index:02d}-{digest}{extension}"
         assets.append(ImageAsset(url, filename, media_type, data))
@@ -718,15 +802,31 @@ def _render_cover_jpeg(article: Article, hero_asset: ImageAsset | None) -> bytes
     canvas = Image.new("RGB", (width, height), "#17262d")
     if hero_asset:
         try:
-            with Image.open(io.BytesIO(hero_asset.data)) as source:
-                source = ImageOps.exif_transpose(source).convert("RGB")
-                canvas = ImageOps.fit(
-                    source,
-                    (width, height),
-                    method=Image.Resampling.LANCZOS,
-                    centering=(0.5, 0.5),
-                )
-        except (OSError, UnidentifiedImageError):
+            with warnings.catch_warnings():
+                warnings.simplefilter("error", Image.DecompressionBombWarning)
+                with Image.open(
+                    io.BytesIO(hero_asset.data),
+                    formats=("JPEG", "PNG", "GIF", "WEBP"),
+                ) as source:
+                    if source.width * source.height > MAX_COVER_SOURCE_PIXELS:
+                        raise Image.DecompressionBombError(
+                            f"Cover source exceeds the {MAX_COVER_SOURCE_PIXELS:,}-pixel limit."
+                        )
+                    source.load()
+                    source = ImageOps.exif_transpose(source).convert("RGB")
+                    canvas = ImageOps.fit(
+                        source,
+                        (width, height),
+                        method=Image.Resampling.LANCZOS,
+                        centering=(0.5, 0.5),
+                    )
+        except (
+            OSError,
+            ValueError,
+            UnidentifiedImageError,
+            Image.DecompressionBombError,
+            Image.DecompressionBombWarning,
+        ):
             pass
 
     article_slug = urlparse(article.source_url).path.rstrip("/").rsplit("/", 1)[-1].lower()
@@ -991,7 +1091,13 @@ def convert_url(
         raise ConversionCancelled("Conversion cancelled.")
     source_url = _validate_source_url(url)
     notify("Downloading article...")
-    page, content_type = _download(source_url, max_bytes=MAX_PAGE_BYTES, cancelled=cancelled)
+    page, content_type = _download(
+        source_url,
+        allowed_hosts=SOURCE_HOSTS,
+        resource_name="Halo Waypoint article",
+        max_bytes=MAX_PAGE_BYTES,
+        cancelled=cancelled,
+    )
     if content_type not in {"text/html", "application/xhtml+xml", "application/octet-stream"}:
         raise ConversionError(f"Expected a web page but received {content_type}.")
     notify("Reading story and metadata...")

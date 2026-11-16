@@ -43,15 +43,15 @@ Generated EPUBs are intended for personal archival and reading. Do not assume th
 
 ## Requirements
 
-- Python 3.10 or newer
-- Pillow 10.1 or newer
+- Python 3.11 or newer
+- Pillow 13.0 or newer within the 13.x release line
 - Tkinter for the desktop interface; it is included with the standard Windows installer from [python.org](https://www.python.org/downloads/)
 
 The included batch launchers target Windows. The Python package and command-line interface can also run anywhere their Python dependencies are available.
 
 ## Quick start
 
-1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/). On Windows, enable **Add Python to PATH** during installation.
+1. Install Python 3.11 or newer from [python.org](https://www.python.org/downloads/). On Windows, enable **Add Python to PATH** during installation.
 2. Open PowerShell in the project folder and install the dependency:
 
    ```powershell
@@ -140,9 +140,9 @@ The project does not claim formal WCAG or EPUB Accessibility conformance without
 
 ## Privacy and network behavior
 
-The application has no accounts, analytics, telemetry, advertising, or generative-AI calls. It requests only the Waypoint article selected by the user and image URLs referenced by that page, which may be hosted on Halo's content delivery network. Generated EPUBs are written only to the chosen local destination.
+The application has no accounts, analytics, telemetry, advertising, or generative-AI calls. It requests only the selected Waypoint article and raster artwork hosted on approved Halo and Waypoint domains. Generated EPUBs are written only to the chosen local destination.
 
-The converter accepts public `halowaypoint.com/news/...` URLs, including locale-prefixed variants. It does not bypass authentication, paywalls, access controls, or digital rights management. Article pages are limited to 10 MB and each image to 40 MB.
+The converter accepts HTTPS `halowaypoint.com/news/...` URLs, including locale-prefixed variants. Redirects and artwork downloads must remain on an approved HTTPS host. SVG and other active or unsupported image formats are rejected. Article pages are limited to 10 MB, individual images to 40 MB, articles to 100 images, and total artwork to 250 MB.
 
 ## Supported scope and limitations
 
@@ -163,6 +163,8 @@ python -m unittest discover -s tests -v
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes. In particular, do not commit generated EPUBs, downloaded Waypoint pages, proprietary fonts, or other third-party assets.
+
+Security vulnerabilities should be reported privately through GitHub as described in [SECURITY.md](SECURITY.md), not through a public issue.
 
 ## License
 
